@@ -1,0 +1,91 @@
+{
+  "entities": {
+    "questions": {
+      "title": "Exam Question",
+      "description": "National exam past question items",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "year": { "type": "string" },
+        "category": { "type": "string" },
+        "majorCategory": { "type": "string" },
+        "subCategory": { "type": "string" },
+        "question": { "type": "string" },
+        "choices": { "type": "array" },
+        "answer": { "type": "string" },
+        "explanation": { "type": "string" },
+        "imageUrl": { "type": "string" }
+      },
+      "required": ["id", "question"]
+    },
+    "tests": {
+      "title": "Delivered Test",
+      "description": "Tests created and distributed by instructors",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "title": { "type": "string" },
+        "category": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "questionIds": { "type": "array", "items": { "type": "string" } },
+        "totalQuestions": { "type": "number" },
+        "instructions": { "type": "string" },
+        "questions": { "type": "array" }
+      },
+      "required": ["id", "title", "totalQuestions", "createdAt"]
+    },
+    "submissions": {
+      "title": "Test Submission",
+      "description": "Student exam attempts and results",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "testId": { "type": "string" },
+        "testTitle": { "type": "string" },
+        "studentName": { "type": "string" },
+        "studentId": { "type": "string" },
+        "score": { "type": "number" },
+        "total": { "type": "number" },
+        "scorePercent": { "type": "number" },
+        "passed": { "type": "boolean" },
+        "timeSpentSeconds": { "type": "number" },
+        "categoryStats": { "type": "object" },
+        "userAnswers": { "type": "object" },
+        "submittedAt": { "type": "string" }
+      },
+      "required": ["testId", "studentName", "score", "total", "submittedAt"]
+    },
+    "students": {
+      "title": "Student Roster",
+      "description": "Student roster and enrolled grades",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string" },
+        "grade": { "type": "number" },
+        "name": { "type": "string" },
+        "notes": { "type": "string" },
+        "registeredAt": { "type": "string" }
+      },
+      "required": ["studentId", "grade"]
+    }
+  },
+  "firestore": {
+    "questions": {
+      "entity": "questions",
+      "indexes": []
+    },
+    "tests": {
+      "entity": "tests",
+      "indexes": []
+    },
+    "submissions": {
+      "entity": "submissions",
+      "indexes": []
+    },
+    "students": {
+      "entity": "students",
+      "indexes": []
+    }
+  }
+}

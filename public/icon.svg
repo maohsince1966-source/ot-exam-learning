@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d9488" />
+      <stop offset="50%" stop-color="#0f766e" />
+      <stop offset="100%" stop-color="#115e59" />
+    </linearGradient>
+    <linearGradient id="capGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fef08a" />
+      <stop offset="100%" stop-color="#eab308" />
+    </linearGradient>
+    <filter id="dropShadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#042f2e" flood-opacity="0.35" />
+    </filter>
+  </defs>
+
+  <!-- Background Circle/Rounded rect with padding -->
+  <rect width="512" height="512" rx="110" fill="url(#bgGrad)" />
+
+  <!-- Inner Subtle Glow Ring -->
+  <circle cx="256" cy="256" r="215" fill="none" stroke="#ffffff" stroke-opacity="0.12" stroke-width="4" />
+
+  <!-- Center Group with Shadow -->
+  <g filter="url(#dropShadow)">
+    <!-- Medical / Health Care Cross Emblem in background -->
+    <rect x="236" y="110" width="40" height="130" rx="10" fill="#ffffff" fill-opacity="0.2" />
+    <rect x="191" y="155" width="130" height="40" rx="10" fill="#ffffff" fill-opacity="0.2" />
+
+    <!-- Rehabilitation / Graduation Mortarboard & Book Emblem -->
+    <!-- Mortarboard Diamond -->
+    <polygon points="256,120 380,180 256,235 132,180" fill="url(#capGrad)" />
+    <!-- Mortarboard Cap Base -->
+    <path d="M185,210 L185,260 C185,295 327,295 327,260 L327,210 C295,225 217,225 185,210 Z" fill="#ca8a04" />
+    <!-- Tassel -->
+    <path d="M365,185 L390,240 C390,255 380,265 380,265" fill="none" stroke="#fef08a" stroke-width="6" stroke-linecap="round" />
+    <circle cx="380" cy="270" r="7" fill="#fef08a" />
+
+    <!-- Open Book Foundation -->
+    <path d="M140,290 C185,275 240,285 256,305 C272,285 327,275 372,290 L372,370 C327,355 272,365 256,385 C240,365 185,355 140,370 Z" fill="#ffffff" />
+    <path d="M256,305 L256,385" stroke="#cbd5e1" stroke-width="4" stroke-linecap="round" />
+
+    <!-- Text: OT -->
+    <text x="256" y="445" font-family="'Noto Sans JP', 'Arial', sans-serif" font-size="52" font-weight="900" fill="#ffffff" text-anchor="middle" letter-spacing="4">
+      OT 国試
+    </text>
+  </g>
+</svg>

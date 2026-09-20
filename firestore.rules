@@ -1,0 +1,40 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Past exam question bank collection
+    match /questions/{questionId} {
+      allow read: if true;
+      allow create, update: if request.resource.data.id is string
+                            && request.resource.data.question is string;
+      allow delete: if true;
+    }
+
+    // Delivered tests collection
+    match /tests/{testId} {
+      allow read: if true;
+      allow create, update: if request.resource.data.id is string
+                            && request.resource.data.title is string
+                            && request.resource.data.totalQuestions is number;
+      allow delete: if true;
+    }
+
+    // Student submissions collection
+    match /submissions/{submissionId} {
+      allow read: if true;
+      allow create: if request.resource.data.testId is string
+                    && request.resource.data.studentName is string
+                    && request.resource.data.score is number
+                    && request.resource.data.total is number;
+      allow update: if false;
+      allow delete: if true;
+    }
+
+    // Student roster collection
+    match /students/{studentDocId} {
+      allow read: if true;
+      allow create, update: if request.resource.data.studentId is string
+                            && request.resource.data.grade is number;
+      allow delete: if true;
+    }
+  }
+}

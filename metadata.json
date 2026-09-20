@@ -1,0 +1,6 @@
+{
+  "name": "作業療法士 国家試験対策",
+  "description": "作業療法士国家試験の過去問演習・検索と、教員による小テスト作成・配信Webアプリケーション。GoogleドキュメントおよびWord（.docx）ファイル印刷・プリント出力連携、PWA、Cloud Run＆Cloud Firestoreクラウド同期対応。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
