@@ -92,7 +92,7 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
   const currentQ = questions[currentIndex];
   const selectedChoices = currentQ ? (userAnswers[currentQ.id] || []) : [];
   const currentIsPickTwo = currentQ ? isPickTwoQuestion(currentQ.question, currentQ.answer) : false;
-  const isRevealed = currentQ ? (isSubmitted || (instantExplanation && revealedExplanations[currentQ.id])) : false;
+  const isRevealed = currentQ ? (isSubmitted || Boolean(revealedExplanations[currentQ.id])) : false;
 
   const handleSelectChoice = (choiceNum: number) => {
     if (isSubmitted || !currentQ) return;
@@ -846,39 +846,61 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
         </div>
 
         {isRevealed && evalCurrent && (
-          <div className="mt-6 p-5 bg-teal-50/60 border border-teal-200 rounded-xl space-y-2">
+          <div className="mt-6 p-5 bg-teal-50/70 border border-teal-200 rounded-xl space-y-2 animate-fadeIn">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="flex items-center space-x-1.5 text-sm font-bold text-teal-950">
                 <HelpCircle className="w-4 h-4 text-teal-600 shrink-0" />
                 <span>正答と解説: 【正答: {formattedCurrentAnswer}】</span>
               </div>
-              <span className={`text-xs font-bold px-2.5 py-1 rounded-md ${
-                evalCurrent.isCorrect
-                  ? 'bg-emerald-100 text-emerald-800'
-                  : 'bg-rose-100 text-rose-800'
-              }`}>
-                {evalCurrent.statusText}
-              </span>
+              <div className="flex items-center space-x-2">
+                <span className={`text-xs font-bold px-2.5 py-1 rounded-md ${
+                  evalCurrent.isCorrect
+                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                    : selectedChoices.length === 0
+                    ? 'bg-slate-100 text-slate-700 border border-slate-200'
+                    : 'bg-rose-100 text-rose-800 border border-rose-200'
+                }`}>
+                  {selectedChoices.length === 0 ? '正答確認' : evalCurrent.statusText}
+                </span>
+                {!isSubmitted && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRevealedExplanations(prev => ({
+                        ...prev,
+                        [currentQ.id]: false
+                      }));
+                    }}
+                    className="text-xs text-slate-500 hover:text-slate-800 px-2 py-1 rounded hover:bg-teal-100/60 transition-colors cursor-pointer"
+                    title="解説を閉じる"
+                  >
+                    閉じる
+                  </button>
+                )}
+              </div>
             </div>
-            <div className="text-xs font-semibold text-teal-900 pb-1">
-              判定詳細: {evalCurrent.detailText}
-            </div>
+            {selectedChoices.length > 0 && (
+              <div className="text-xs font-semibold text-teal-900 pb-1">
+                判定詳細: {evalCurrent.detailText}
+              </div>
+            )}
             <p className="text-xs sm:text-sm text-slate-700 leading-relaxed pt-1 whitespace-pre-wrap border-t border-teal-100">
               {currentQ.explanation || '解説は準備中です。'}
             </p>
           </div>
         )}
 
-        {!isRevealed && selectedChoices.length > 0 && (
+        {!isRevealed && (
           <div className="pt-2 flex justify-end">
             <button
+              type="button"
               onClick={() => {
                 setRevealedExplanations(prev => ({
                   ...prev,
                   [currentQ.id]: true
                 }));
               }}
-              className="text-xs text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200 px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center space-x-1"
+              className="text-xs text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200 px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center space-x-1 cursor-pointer shadow-2xs"
             >
               <HelpCircle className="w-3.5 h-3.5" />
               <span>この問題の正答と解説を確認する</span>
