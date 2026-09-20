@@ -4,12 +4,14 @@ import { parseSpreadsheetText, exportToCSV } from '../utils/csvParser';
 import { parseCategory, isPickTwoQuestion, formatAnswerDisplay } from '../utils/categoryHelper';
 import { ShareTestModal } from './ShareTestModal';
 import { TestAnalyticsModal } from './TestAnalyticsModal';
+import { ComprehensiveAnalyticsModal } from './ComprehensiveAnalyticsModal';
 import { TeacherAuthModal } from './TeacherAuthModal';
 import { StudentRosterManager } from './StudentRosterManager';
 import { GoogleDocsExportModal } from './GoogleDocsExportModal';
 import { WordExportModal } from './WordExportModal';
 import { fetchStudentRoster, subscribeStudentRoster } from '../services/studentRosterService';
 import { subscribeAllSubmissions } from '../services/testSyncService';
+import { SubmissionRecord } from '../types';
 import { 
   Send, 
   PlusCircle, 
@@ -41,6 +43,7 @@ import {
   GraduationCap,
   Users,
   UserCheck,
+  ClipboardList,
   FileText,
   Printer,
   FileDown
@@ -80,8 +83,11 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
   const [deliverySuccessMessage, setDeliverySuccessMessage] = useState<string | null>(null);
   const [deliveryErrorMessage, setDeliveryErrorMessage] = useState<string | null>(null);
   const [sharingTest, setSharingTest] = useState<{ test: DeliveredTest; questions: Question[] } | null>(null);
-  const [analyticsTest, setAnalyticsTest] = useState<{ test: DeliveredTest; questions: Question[] } | null>(null);
+  const [analyticsTest, setAnalyticsTest] = useState<{ test: DeliveredTest; questions: Question[]; initialTab?: 'students' | 'questions' | 'guidance' } | null>(null);
   const [submissionCounts, setSubmissionCounts] = useState<Record<string, number>>({});
+  const [allSubmissionsList, setAllSubmissionsList] = useState<SubmissionRecord[]>([]);
+  const [showComprehensiveModal, setShowComprehensiveModal] = useState(false);
+  const [comprehensiveInitialStudentId, setComprehensiveInitialStudentId] = useState<string | undefined>(undefined);
   const [showPasscodeSettingsModal, setShowPasscodeSettingsModal] = useState(false);
   const [googleDocsExportData, setGoogleDocsExportData] = useState<{ title: string; questions: Question[] } | null>(null);
   const [wordExportData, setWordExportData] = useState<{ title: string; questions: Question[] } | null>(null);
@@ -133,6 +139,7 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
   // Real-time subscribe to student submissions across all tests to show count badges
   useEffect(() => {
     const unsubscribe = subscribeAllSubmissions((subs) => {
+      setAllSubmissionsList(subs);
       const counts: Record<string, number> = {};
       subs.forEach(s => {
         counts[s.testId] = (counts[s.testId] || 0) + 1;
@@ -607,64 +614,85 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
       )}
 
       {/* Tabs */}
-      <div className="flex border-b border-slate-200 space-x-2 sm:space-x-4">
-        <button
-          onClick={() => setActiveTab('create-deliver')}
-          className={`py-3 px-4 text-sm font-semibold border-b-2 flex items-center space-x-2 transition-colors ${
-            activeTab === 'create-deliver'
-              ? 'border-indigo-600 text-indigo-700'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          <Send className="w-4 h-4" />
-          <span>小テスト作問・配信</span>
-          {selectedQuestionIds.length > 0 && (
+      <div className="flex flex-wrap items-center justify-between border-b border-slate-200 gap-2">
+        <div className="flex space-x-2 sm:space-x-4 overflow-x-auto">
+          <button
+            onClick={() => setActiveTab('create-deliver')}
+            className={`py-3 px-4 text-sm font-semibold border-b-2 flex items-center space-x-2 transition-colors ${
+              activeTab === 'create-deliver'
+                ? 'border-indigo-600 text-indigo-700'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            <Send className="w-4 h-4" />
+            <span>小テスト作問・配信</span>
+            {selectedQuestionIds.length > 0 && (
+              <span className="bg-indigo-100 text-indigo-800 text-[11px] font-bold px-1.5 py-0.5 rounded-full">
+                選択中 {selectedQuestionIds.length}問
+              </span>
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab('manage-tests')}
+            className={`py-3 px-4 text-sm font-semibold border-b-2 flex items-center space-x-2 transition-colors ${
+              activeTab === 'manage-tests'
+                ? 'border-indigo-600 text-indigo-700'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            <Database className="w-4 h-4" />
+            <span>配信済みテスト一覧</span>
+            <span className="bg-slate-100 text-slate-600 text-[11px] font-bold px-1.5 py-0.5 rounded-full">
+              {deliveredTests.length}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('spreadsheet-sync')}
+            className={`py-3 px-4 text-sm font-semibold border-b-2 flex items-center space-x-2 transition-colors ${
+              activeTab === 'spreadsheet-sync'
+                ? 'border-indigo-600 text-indigo-700'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            <span>Googleスプレッドシート連携・DB管理</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('student-roster')}
+            className={`py-3 px-4 text-sm font-semibold border-b-2 flex items-center space-x-2 transition-colors ${
+              activeTab === 'student-roster'
+                ? 'border-indigo-600 text-indigo-700'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            <GraduationCap className="w-4 h-4" />
+            <span>学生名簿・学年管理</span>
             <span className="bg-indigo-100 text-indigo-800 text-[11px] font-bold px-1.5 py-0.5 rounded-full">
-              選択中 {selectedQuestionIds.length}問
+              {rosterStudents.length}名
+            </span>
+          </button>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => {
+            setComprehensiveInitialStudentId(undefined);
+            setShowComprehensiveModal(true);
+          }}
+          disabled={deliveredTests.length === 0}
+          className="my-1.5 px-3.5 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 disabled:opacity-40"
+          title="これまで配信した全試験の解答データを横断集計し、学生ごとの総合苦手分野分析・指導資料を作成"
+        >
+          <Sparkles className="w-3.5 h-3.5 text-amber-200 animate-pulse" />
+          <span>全試験 総合苦手分析・指導資料</span>
+          {allSubmissionsList.length > 0 && (
+            <span className="bg-amber-700/80 text-white text-[10px] px-1.5 py-0.2 rounded-full font-extrabold">
+              {allSubmissionsList.length}
             </span>
           )}
-        </button>
-
-        <button
-          onClick={() => setActiveTab('manage-tests')}
-          className={`py-3 px-4 text-sm font-semibold border-b-2 flex items-center space-x-2 transition-colors ${
-            activeTab === 'manage-tests'
-              ? 'border-indigo-600 text-indigo-700'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          <Database className="w-4 h-4" />
-          <span>配信済みテスト一覧</span>
-          <span className="bg-slate-100 text-slate-600 text-[11px] font-bold px-1.5 py-0.5 rounded-full">
-            {deliveredTests.length}
-          </span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('spreadsheet-sync')}
-          className={`py-3 px-4 text-sm font-semibold border-b-2 flex items-center space-x-2 transition-colors ${
-            activeTab === 'spreadsheet-sync'
-              ? 'border-indigo-600 text-indigo-700'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          <FileSpreadsheet className="w-4 h-4" />
-          <span>Googleスプレッドシート連携・DB管理</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('student-roster')}
-          className={`py-3 px-4 text-sm font-semibold border-b-2 flex items-center space-x-2 transition-colors ${
-            activeTab === 'student-roster'
-              ? 'border-indigo-600 text-indigo-700'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          <GraduationCap className="w-4 h-4" />
-          <span>学生名簿・学年管理</span>
-          <span className="bg-indigo-100 text-indigo-800 text-[11px] font-bold px-1.5 py-0.5 rounded-full">
-            {rosterStudents.length}名
-          </span>
         </button>
       </div>
 
@@ -1260,7 +1288,44 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
 
       {/* TAB 2: 配信済みテスト一覧 */}
       {activeTab === 'manage-tests' && (
-        <div className="space-y-4">
+        <div className="space-y-5">
+          {/* COMPREHENSIVE CROSS-TEST GUIDANCE BANNER */}
+          <div className="bg-gradient-to-r from-amber-500 via-amber-600 to-orange-600 rounded-2xl p-5 text-white shadow-lg flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div className="space-y-1.5 max-w-2xl">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-white text-amber-900 uppercase tracking-wide">
+                  全試験横断 総合分析
+                </span>
+                <span className="text-xs text-amber-100 font-medium">
+                  これまでの全 {deliveredTests.length} 回の小テスト結果を総合集計
+                </span>
+              </div>
+              <h3 className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-amber-200" />
+                これまでの全試験を総合した「苦手分野分析・個別指導資料」
+              </h3>
+              <p className="text-xs text-amber-100 leading-relaxed">
+                単発のテストだけでなく、過去に配信したすべての小テスト結果を統合・横断集計し、学生一人ひとりが継続してつまずいている真の弱点分野（大項目・中項目）を特定。A4指導カルテ・学生返却用シートの作成や印刷が可能です。
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setComprehensiveInitialStudentId(undefined);
+                setShowComprehensiveModal(true);
+              }}
+              disabled={deliveredTests.length === 0}
+              className="px-5 py-3 bg-white hover:bg-amber-50 text-slate-900 rounded-xl text-xs sm:text-sm font-black transition-all shadow-md flex items-center gap-2 shrink-0 disabled:opacity-50 cursor-pointer"
+            >
+              <ClipboardList className="w-4 h-4 text-amber-600" />
+              <span>全試験 総合指導カルテを開く</span>
+              <span className="bg-amber-100 text-amber-900 text-xs px-2 py-0.5 rounded-full font-bold">
+                累計 {allSubmissionsList.length} 件提出
+              </span>
+            </button>
+          </div>
+
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-bold text-slate-900">配信中の小テスト</h2>
@@ -1391,6 +1456,22 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
                           {submissionCounts[test.id]}名
                         </span>
                       )}
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        const qs = (test.questions && test.questions.length > 0)
+                          ? test.questions
+                          : test.questionIds
+                              .map(id => questionMap.get(id))
+                              .filter((q): q is Question => q !== undefined);
+                        setAnalyticsTest({ test, questions: qs, initialTab: 'guidance' });
+                      }}
+                      className="px-3 py-1.5 text-xs text-amber-900 hover:text-amber-950 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg font-bold transition-colors flex items-center shadow-2xs"
+                      title="この小テストの学生個人別苦手分析・指導カルテを作成・印刷"
+                    >
+                      <ClipboardList className="w-3.5 h-3.5 mr-1 text-amber-700" />
+                      指導資料作成
                     </button>
 
                     <button
@@ -2119,7 +2200,24 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
         <TestAnalyticsModal
           test={analyticsTest.test}
           questions={analyticsTest.questions}
+          initialTab={analyticsTest.initialTab}
+          onOpenComprehensiveGuidance={(studentId) => {
+            setComprehensiveInitialStudentId(studentId);
+            setShowComprehensiveModal(true);
+          }}
           onClose={() => setAnalyticsTest(null)}
+        />
+      )}
+
+      {/* Comprehensive Cross-Test Guidance & Weakness Analytics Modal */}
+      {showComprehensiveModal && (
+        <ComprehensiveAnalyticsModal
+          deliveredTests={deliveredTests}
+          allQuestions={questions}
+          allSubmissions={allSubmissionsList}
+          rosterStudents={rosterStudents}
+          initialStudentId={comprehensiveInitialStudentId}
+          onClose={() => setShowComprehensiveModal(false)}
         />
       )}
 

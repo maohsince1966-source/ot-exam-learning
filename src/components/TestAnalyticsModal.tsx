@@ -44,6 +44,7 @@ interface TestAnalyticsModalProps {
   test: DeliveredTest;
   questions: Question[];
   initialTab?: 'students' | 'questions' | 'guidance';
+  onOpenComprehensiveGuidance?: (studentId?: string) => void;
   onClose: () => void;
 }
 
@@ -51,6 +52,7 @@ export const TestAnalyticsModal: React.FC<TestAnalyticsModalProps> = ({
   test,
   questions,
   initialTab = 'students',
+  onOpenComprehensiveGuidance,
   onClose
 }) => {
   const [submissions, setSubmissions] = useState<SubmissionRecord[]>([]);
@@ -528,6 +530,17 @@ ${teacherNote ? `\n■ 面談・指導メモ:\n${teacherNote}` : ''}`;
           </div>
 
           <div className="flex items-center gap-2">
+            {onOpenComprehensiveGuidance && (
+              <button
+                onClick={() => onOpenComprehensiveGuidance(activeGuidanceStudent?.studentId || undefined)}
+                className="flex items-center gap-1.5 px-3 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm"
+                title="これまで配信したすべての小テスト結果を総合した個別弱点カルテ・指導資料を作成"
+              >
+                <Sparkles className="w-4 h-4 text-amber-200 animate-pulse" />
+                <span className="hidden sm:inline">🌟 全試験総合</span>
+                <span>弱点分析・指導資料</span>
+              </button>
+            )}
             <button
               onClick={() => {
                 setFeedbackStudentId(undefined);
@@ -1043,6 +1056,16 @@ ${teacherNote ? `\n■ 面談・指導メモ:\n${teacherNote}` : ''}`;
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                  {onOpenComprehensiveGuidance && (
+                    <button
+                      onClick={() => onOpenComprehensiveGuidance(activeGuidanceStudent?.studentId || undefined)}
+                      className="px-3.5 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 transition-all shadow-sm"
+                      title="これまでのすべての小テスト結果を総合して苦手分野を特定・指導カルテを作成"
+                    >
+                      <Sparkles className="w-4 h-4 text-amber-200 animate-pulse" />
+                      <span>🌟 これまでの全試験を総合した指導資料</span>
+                    </button>
+                  )}
                   <button
                     onClick={() => {
                       setFeedbackStudentId(activeGuidanceStudent?.id || undefined);
