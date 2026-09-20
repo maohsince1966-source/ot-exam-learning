@@ -40,6 +40,9 @@ interface StudentViewProps {
   ) => void;
   onViewHistoryResult: (result: QuizAttemptResult) => void;
   onJoinByCode?: (code: string) => Promise<boolean>;
+  studentProfile?: StudentLocalProfile | null;
+  onOpenProfile?: () => void;
+  onProfileUpdate?: (profile: StudentLocalProfile) => void;
 }
 
 export const StudentView: React.FC<StudentViewProps> = ({
@@ -48,7 +51,10 @@ export const StudentView: React.FC<StudentViewProps> = ({
   quizHistory,
   onStartQuiz,
   onViewHistoryResult,
-  onJoinByCode
+  onJoinByCode,
+  studentProfile: externalProfile,
+  onOpenProfile,
+  onProfileUpdate
 }) => {
   const [activeTab, setActiveTab] = useState<'practice' | 'today-tests' | 'history'>('practice');
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -56,11 +62,21 @@ export const StudentView: React.FC<StudentViewProps> = ({
   const [isJoiningCode, setIsJoiningCode] = useState(false);
   const [codeError, setCodeError] = useState<string | null>(null);
 
-  // Student device profile state
-  const [studentProfile, setStudentProfile] = useState<StudentLocalProfile | null>(() => getStudentProfile());
+  // Student device profile state (syncs with externalProfile if provided)
+  const [internalProfile, setInternalProfile] = useState<StudentLocalProfile | null>(() => getStudentProfile());
+  const studentProfile = externalProfile !== undefined ? externalProfile : internalProfile;
+
   const [showRegistrationModal, setShowRegistrationModal] = useState(false);
   const [filterMyGradeOnly, setFilterMyGradeOnly] = useState(true);
   const [registrationToast, setRegistrationToast] = useState<string | null>(null);
+
+  const openProfileDialog = () => {
+    if (onOpenProfile) {
+      onOpenProfile();
+    } else {
+      setShowRegistrationModal(true);
+    }
+  };
 
   // Eligible delivered tests filtered by student's grade / ID
   const eligibleDeliveredTests = useMemo(() => {
@@ -259,8 +275,8 @@ export const StudentView: React.FC<StudentViewProps> = ({
               </div>
               <button
                 type="button"
-                onClick={() => setShowRegistrationModal(true)}
-                className="ml-1 p-1 text-teal-200 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
+                onClick={openProfileDialog}
+                className="ml-1 p-1 text-teal-200 hover:text-white hover:bg-white/10 rounded-lg transition-colors cursor-pointer"
                 title="学籍番号・学年の変更"
               >
                 <Edit3 className="w-3.5 h-3.5" />
@@ -269,8 +285,8 @@ export const StudentView: React.FC<StudentViewProps> = ({
           ) : (
             <button
               type="button"
-              onClick={() => setShowRegistrationModal(true)}
-              className="px-3.5 py-2.5 bg-amber-400 hover:bg-amber-300 text-amber-950 font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 animate-pulse"
+              onClick={openProfileDialog}
+              className="px-3.5 py-2.5 bg-amber-400 hover:bg-amber-300 text-amber-950 font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 animate-pulse cursor-pointer"
             >
               <UserCheck className="w-4 h-4" />
               <span>学籍番号を端末に登録</span>
@@ -340,7 +356,10 @@ export const StudentView: React.FC<StudentViewProps> = ({
           setPendingTestToStart(null);
         }}
         onSaved={(newProfile) => {
-          setStudentProfile(newProfile);
+          setInternalProfile(newProfile);
+          if (onProfileUpdate) {
+            onProfileUpdate(newProfile);
+          }
           setShowRegistrationModal(false);
           setRegistrationToast(`学籍番号「${newProfile.studentId}」（${newProfile.grade}年生）をこの端末に登録しました！`);
           setTimeout(() => setRegistrationToast(null), 5000);

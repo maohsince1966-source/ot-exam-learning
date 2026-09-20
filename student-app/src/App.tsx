@@ -186,7 +186,9 @@ export const App: React.FC = () => {
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans antialiased selection:bg-teal-500 selection:text-white">
       {/* Student Navigation Header */}
       <StudentNavbar 
-        onOpenProfileModal={() => setShowProfileModal(true)}
+        studentProfile={studentProfile}
+        onOpenProfile={() => setShowProfileModal(true)}
+        pendingTestsCount={deliveredTests.length}
       />
 
       {/* Main Content Area */}
@@ -236,6 +238,9 @@ export const App: React.FC = () => {
             questions={questions}
             deliveredTests={deliveredTests}
             quizHistory={quizHistory}
+            studentProfile={studentProfile}
+            onOpenProfile={() => setShowProfileModal(true)}
+            onProfileUpdate={(profile) => setStudentProfile(profile)}
             onStartQuiz={handleStartQuiz}
             onViewHistoryResult={handleViewHistoryResult}
             onJoinByCode={handleJoinByCode}

@@ -4,16 +4,22 @@ import { PWAInstallButton } from './PWAInstallButton';
 import { StudentLocalProfile } from '../types';
 
 interface StudentNavbarProps {
-  studentProfile: StudentLocalProfile | null;
-  onOpenProfile: () => void;
-  pendingTestsCount: number;
+  studentProfile?: StudentLocalProfile | null;
+  onOpenProfile?: () => void;
+  onOpenProfileModal?: () => void;
+  pendingTestsCount?: number;
 }
 
 export const StudentNavbar: React.FC<StudentNavbarProps> = ({
   studentProfile,
   onOpenProfile,
-  pendingTestsCount
+  onOpenProfileModal,
+  pendingTestsCount = 0
 }) => {
+  const handleOpen = () => {
+    if (onOpenProfile) onOpenProfile();
+    else if (onOpenProfileModal) onOpenProfileModal();
+  };
   return (
     <header className="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-xs">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -46,8 +52,8 @@ export const StudentNavbar: React.FC<StudentNavbarProps> = ({
             {studentProfile ? (
               <button
                 type="button"
-                onClick={onOpenProfile}
-                className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-800 px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-medium transition-colors"
+                onClick={handleOpen}
+                className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-800 px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-medium transition-colors cursor-pointer"
                 title="学籍番号・学年の変更"
               >
                 <span className="px-1.5 py-0.5 bg-teal-600 text-white text-[10px] font-bold rounded">
@@ -60,8 +66,8 @@ export const StudentNavbar: React.FC<StudentNavbarProps> = ({
             ) : (
               <button
                 type="button"
-                onClick={onOpenProfile}
-                className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-xl shadow-xs transition-colors"
+                onClick={handleOpen}
+                className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-xl shadow-xs transition-colors cursor-pointer"
               >
                 学籍番号を登録
               </button>
