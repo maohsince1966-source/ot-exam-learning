@@ -5,7 +5,8 @@ import {
   saveStudentsToRoster, 
   deleteStudentFromRoster,
   clearAllStudentsRoster,
-  loadSampleRoster
+  loadSampleRoster,
+  subscribeStudentRoster
 } from '../services/studentRosterService';
 import { 
   Users, 
@@ -209,7 +210,6 @@ export const StudentRosterManager: React.FC<StudentRosterManagerProps> = ({ onRo
   }, [bulkText, bulkGrade]);
 
   const loadRoster = async () => {
-    setLoading(true);
     try {
       const list = await fetchStudentRoster();
       setStudents(list);
@@ -221,7 +221,26 @@ export const StudentRosterManager: React.FC<StudentRosterManagerProps> = ({ onRo
   };
 
   useEffect(() => {
-    loadRoster();
+    setLoading(true);
+    // 1. Subscribe to real-time updates (localStorage + Firestore)
+    const unsubscribe = subscribeStudentRoster((updatedList) => {
+      setStudents(updatedList);
+      setLoading(false);
+    });
+
+    // 2. Periodic background refresh (every 5 seconds) to catch students registering from external endpoints
+    const interval = setInterval(() => {
+      fetchStudentRoster().then(list => {
+        if (list && list.length > 0) {
+          setStudents(list);
+        }
+      }).catch(() => {});
+    }, 5000);
+
+    return () => {
+      unsubscribe();
+      clearInterval(interval);
+    };
   }, []);
 
   const handleAddSingle = async (e: React.FormEvent) => {

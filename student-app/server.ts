@@ -23,6 +23,7 @@ async function startServer() {
   const TESTS_FILE = path.join(DATA_DIR, "shared_tests.json");
   const QUESTIONS_FILE = path.join(DATA_DIR, "questions.json");
   const SUBMISSIONS_FILE = path.join(DATA_DIR, "submissions.json");
+  const STUDENTS_FILE = path.join(DATA_DIR, "students_roster.json");
 
   if (!fs.existsSync(DATA_DIR)) {
     try {
@@ -140,6 +141,70 @@ async function startServer() {
       }
     } catch {}
     return res.json({ submissions: [] });
+  });
+
+  // POST /api/students - Register or update student info from student portal
+  app.post("/api/students", (req, res) => {
+    try {
+      const payload = req.body;
+      if (!payload || !payload.studentId) {
+        return res.status(400).json({ error: "studentId is required" });
+      }
+      const cleanId = String(payload.studentId).trim().toUpperCase();
+      const grade = Number(payload.grade) || 1;
+      const name = (payload.name || "").trim();
+      const notes = (payload.notes || "学生端末より自己登録").trim();
+
+      let roster: any[] = [];
+      if (fs.existsSync(STUDENTS_FILE)) {
+        try {
+          const raw = fs.readFileSync(STUDENTS_FILE, "utf-8");
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) roster = parsed;
+        } catch {}
+      }
+
+      const idx = roster.findIndex(s => (s.studentId || "").toUpperCase() === cleanId);
+      if (idx >= 0) {
+        roster[idx] = {
+          ...roster[idx],
+          grade,
+          name: name || roster[idx].name,
+          notes: notes || roster[idx].notes
+        };
+      } else {
+        roster.push({
+          studentId: cleanId,
+          grade,
+          name: name || `学生 (${cleanId})`,
+          notes,
+          registeredAt: new Date().toISOString()
+        });
+      }
+
+      roster.sort((a, b) => {
+        if (a.grade !== b.grade) return a.grade - b.grade;
+        return a.studentId.localeCompare(b.studentId);
+      });
+
+      fs.writeFileSync(STUDENTS_FILE, JSON.stringify(roster, null, 2), "utf-8");
+      return res.json({ success: true, studentId: cleanId, count: roster.length });
+    } catch (err: any) {
+      console.error("Error saving student to roster:", err);
+      return res.status(500).json({ error: err.message || "Failed to save student" });
+    }
+  });
+
+  // GET /api/students - List students
+  app.get("/api/students", (_req, res) => {
+    try {
+      if (fs.existsSync(STUDENTS_FILE)) {
+        const raw = fs.readFileSync(STUDENTS_FILE, "utf-8");
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return res.json({ students: parsed });
+      }
+    } catch {}
+    return res.json({ students: [] });
   });
 
   // Vite middleware in dev or static dist in prod

@@ -1,4 +1,6 @@
 import { StudentLocalProfile, DeliveredTest } from '../types';
+import { db, isFirebaseConfigured } from '../lib/firebase';
+import { doc, setDoc } from 'firebase/firestore';
 
 const LOCAL_STORAGE_KEY_STUDENT_ID = 'ot_student_id';
 const LOCAL_STORAGE_KEY_STUDENT_GRADE = 'ot_student_grade';
@@ -28,7 +30,7 @@ export function getStudentLocalProfile(): StudentLocalProfile | null {
 }
 
 /**
- * Save student profile on this device's localStorage
+ * Save student profile on this device's localStorage AND sync to teacher roster (Server + Firestore)
  */
 export function saveStudentLocalProfile(profile: StudentLocalProfile): void {
   try {
@@ -39,6 +41,38 @@ export function saveStudentLocalProfile(profile: StudentLocalProfile): void {
       localStorage.setItem(LOCAL_STORAGE_KEY_STUDENT_NAME, profile.name.trim());
     } else {
       localStorage.removeItem(LOCAL_STORAGE_KEY_STUDENT_NAME);
+    }
+
+    // 1. Sync to Server API
+    fetch('/api/students', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        studentId: cleanId,
+        grade: profile.grade || 1,
+        name: profile.name || '',
+        notes: '学生専用ポータルより登録'
+      })
+    }).catch(err => {
+      console.warn('Server sync notice:', err);
+    });
+
+    // 2. Sync directly to Cloud Firestore (so teacher receives it in real-time)
+    if (isFirebaseConfigured && db) {
+      try {
+        const docRef = doc(db, 'students', cleanId);
+        setDoc(docRef, {
+          studentId: cleanId,
+          grade: profile.grade || 1,
+          name: profile.name || '',
+          notes: '学生専用ポータルより登録',
+          registeredAt: new Date().toISOString()
+        }, { merge: true }).catch(e => {
+          console.warn('Firestore direct write notice:', e);
+        });
+      } catch (err) {
+        console.warn('Firestore init write notice:', err);
+      }
     }
   } catch (e) {
     console.error('Failed to save student profile locally:', e);
