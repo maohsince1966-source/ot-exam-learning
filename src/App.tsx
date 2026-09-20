@@ -25,6 +25,7 @@ import {
   fetchQuestionsFromCloud,
   saveQuestionsToCloud
 } from './services/testSyncService';
+import { recordQuizAttempt } from './services/studentStudyHistoryService';
 import { AlertTriangle } from 'lucide-react';
 
 const STORAGE_KEY_QUESTIONS = 'ot_exam_questions_db_v2';
@@ -385,6 +386,7 @@ export default function App() {
   // Quiz Finish Handler
   const handleQuizFinish = (result: QuizAttemptResult) => {
     setQuizHistory(prev => [result, ...prev.filter(r => r.id !== result.id)]);
+    recordQuizAttempt(result, activeQuiz?.questions || questions);
   };
 
   // Exit Quiz

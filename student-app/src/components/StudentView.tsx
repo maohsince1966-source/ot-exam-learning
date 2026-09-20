@@ -25,8 +25,25 @@ import {
   GraduationCap,
   UserCheck,
   Users,
-  Edit3
+  Edit3,
+  XCircle,
+  AlertCircle,
+  HelpCircle,
+  Target,
+  Flame,
+  Check,
+  RefreshCw,
+  Trash2
 } from 'lucide-react';
+import {
+  getQuestionStudyRecords,
+  syncStudyRecordsFromHistory,
+  calculateStudyStats,
+  getQuestionStudyStatus,
+  clearAllStudyRecords,
+  StudyFilterType,
+  QuestionStudyRecord
+} from '../services/studentStudyHistoryService';
 
 interface StudentViewProps {
   questions: Question[];
@@ -36,13 +53,11 @@ interface StudentViewProps {
     selectedQuestions: Question[], 
     title: string, 
     testId?: string, 
-    instantFeedback?: boolean
+    instantExplanation?: boolean
   ) => void;
   onViewHistoryResult: (result: QuizAttemptResult) => void;
+  onSwitchToTeacherMode?: () => void;
   onJoinByCode?: (code: string) => Promise<boolean>;
-  studentProfile?: StudentLocalProfile | null;
-  onOpenProfile?: () => void;
-  onProfileUpdate?: (profile: StudentLocalProfile) => void;
 }
 
 export const StudentView: React.FC<StudentViewProps> = ({
@@ -51,10 +66,8 @@ export const StudentView: React.FC<StudentViewProps> = ({
   quizHistory,
   onStartQuiz,
   onViewHistoryResult,
-  onJoinByCode,
-  studentProfile: externalProfile,
-  onOpenProfile,
-  onProfileUpdate
+  onSwitchToTeacherMode,
+  onJoinByCode
 }) => {
   const [activeTab, setActiveTab] = useState<'practice' | 'today-tests' | 'history'>('practice');
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -62,27 +75,47 @@ export const StudentView: React.FC<StudentViewProps> = ({
   const [isJoiningCode, setIsJoiningCode] = useState(false);
   const [codeError, setCodeError] = useState<string | null>(null);
 
-  // Student device profile state (syncs with externalProfile if provided)
-  const [internalProfile, setInternalProfile] = useState<StudentLocalProfile | null>(() => getStudentProfile());
-  const studentProfile = externalProfile !== undefined ? externalProfile : internalProfile;
-
+  // Student device profile state
+  const [studentProfile, setStudentProfile] = useState<StudentLocalProfile | null>(() => getStudentProfile());
   const [showRegistrationModal, setShowRegistrationModal] = useState(false);
   const [filterMyGradeOnly, setFilterMyGradeOnly] = useState(true);
   const [registrationToast, setRegistrationToast] = useState<string | null>(null);
-
-  const openProfileDialog = () => {
-    if (onOpenProfile) {
-      onOpenProfile();
-    } else {
-      setShowRegistrationModal(true);
-    }
-  };
 
   // Eligible delivered tests filtered by student's grade / ID
   const eligibleDeliveredTests = useMemo(() => {
     if (!filterMyGradeOnly || !studentProfile) return deliveredTests;
     return deliveredTests.filter(t => isTestEligibleForStudent(t, studentProfile).eligible);
   }, [deliveredTests, filterMyGradeOnly, studentProfile]);
+
+  // Study record & learning status filter
+  const [studyFilter, setStudyFilter] = useState<StudyFilterType>('all');
+  const [studyRecords, setStudyRecords] = useState<Record<string, QuestionStudyRecord>>(() => getQuestionStudyRecords());
+
+  // Synchronize past quiz results into study records
+  useEffect(() => {
+    if (quizHistory.length > 0 && questions.length > 0) {
+      const updated = syncStudyRecordsFromHistory(quizHistory, questions);
+      setStudyRecords(updated);
+    }
+  }, [quizHistory, questions]);
+
+  // Listen for real-time study record updates across components
+  useEffect(() => {
+    const handleStorageUpdate = () => {
+      setStudyRecords(getQuestionStudyRecords());
+    };
+    window.addEventListener('study_records_updated', handleStorageUpdate);
+    window.addEventListener('storage', handleStorageUpdate);
+    return () => {
+      window.removeEventListener('study_records_updated', handleStorageUpdate);
+      window.removeEventListener('storage', handleStorageUpdate);
+    };
+  }, []);
+
+  // Compute comprehensive study stats
+  const studyStats = useMemo(() => {
+    return calculateStudyStats(questions, studyRecords);
+  }, [questions, studyRecords]);
 
   const [selectedMajorCategory, setSelectedMajorCategory] = useState<string>('all');
   const [selectedSubCategory, setSelectedSubCategory] = useState<string>('all');
@@ -101,7 +134,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
   // Reset visible limit whenever filters change
   useEffect(() => {
     setVisibleQuestionsCount(30);
-  }, [selectedMajorCategory, selectedSubCategory, selectedYear, filterPickTwoOnly, filterHasImageOnly, searchKeyword]);
+  }, [selectedMajorCategory, selectedSubCategory, selectedYear, filterPickTwoOnly, filterHasImageOnly, searchKeyword, studyFilter]);
 
   // Extract unique major categories
   const majorCategories = useMemo(() => {
@@ -157,6 +190,21 @@ export const StudentView: React.FC<StudentViewProps> = ({
         if (!q.imageUrl) return false;
       }
 
+      // Filter by studyFilter (learning & mistake history)
+      if (studyFilter === 'incorrect') {
+        const rec = studyRecords[q.id];
+        // Must have been attempted and last attempt was incorrect (needs review)
+        if (!rec || rec.totalAttempts === 0 || rec.lastIsCorrect) return false;
+      } else if (studyFilter === 'unattempted') {
+        const rec = studyRecords[q.id];
+        // Must never have been attempted yet
+        if (rec && rec.totalAttempts > 0) return false;
+      } else if (studyFilter === 'correct') {
+        const rec = studyRecords[q.id];
+        // Must have been attempted and last attempt was correct
+        if (!rec || rec.totalAttempts === 0 || !rec.lastIsCorrect) return false;
+      }
+
       if (!searchKeyword.trim()) return true;
 
       const kw = searchKeyword.toLowerCase();
@@ -169,7 +217,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
         q.choices.some(c => c.toLowerCase().includes(kw))
       );
     });
-  }, [questions, selectedMajorCategory, selectedSubCategory, selectedYear, searchKeyword, filterPickTwoOnly, filterHasImageOnly]);
+  }, [questions, selectedMajorCategory, selectedSubCategory, selectedYear, searchKeyword, filterPickTwoOnly, filterHasImageOnly, studyFilter, studyRecords]);
 
   // Safe subset for rendering to prevent mobile DOM memory crash
   const visibleQuestions = useMemo(() => {
@@ -188,13 +236,24 @@ export const StudentView: React.FC<StudentViewProps> = ({
       pool.sort(() => Math.random() - 0.5);
     }
 
+    // Limit to selected question count (10, 20, 30, 40, 50, -1: all)
     const count = questionCountLimit === -1 ? pool.length : Math.min(pool.length, questionCountLimit);
     const selected = pool.slice(0, count);
 
     const categoryTitle = selectedMajorCategory === 'all' 
       ? '総合演習' 
       : `${selectedMajorCategory}${selectedSubCategory !== 'all' ? `（${selectedSubCategory}）` : ''}`;
-    const title = `過去問演習（${categoryTitle}・${selected.length}問）`;
+    
+    let filterLabel = '';
+    if (studyFilter === 'incorrect') {
+      filterLabel = '【要復習・間違えた問題】';
+    } else if (studyFilter === 'unattempted') {
+      filterLabel = '【未解答・初見問題】';
+    } else if (studyFilter === 'correct') {
+      filterLabel = '【正解済みの再演習】';
+    }
+
+    const title = `${filterLabel}過去問演習（${categoryTitle}・${selected.length}問）`;
 
     onStartQuiz(selected, title, undefined, instantFeedbackMode);
   };
@@ -210,6 +269,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
   // Launch delivered test
   const handleStartDeliveredTest = (test: DeliveredTest, overrideProfile?: StudentLocalProfile | null) => {
     const activeProfile = overrideProfile !== undefined ? overrideProfile : (studentProfile || getStudentProfile());
+    // If student has not registered student ID, prompt registration first
     if (!activeProfile || !activeProfile.studentId) {
       setPendingTestToStart(test);
       setShowRegistrationModal(true);
@@ -231,6 +291,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
     onStartQuiz(testQuestions, test.title, test.id, false);
   };
 
+  // Question count options: 10 to 50, and all (-1)
   const countOptions = [10, 20, 30, 40, 50, -1];
 
   const handleResetFilters = () => {
@@ -240,6 +301,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
     setSearchKeyword('');
     setFilterPickTwoOnly(false);
     setFilterHasImageOnly(false);
+    setStudyFilter('all');
   };
 
   return (
@@ -249,7 +311,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
         <div>
           <span className="text-teal-200 text-xs font-semibold tracking-wide uppercase flex items-center gap-1.5">
             <Sparkles className="w-3.5 h-3.5" />
-            作業療法士 国家試験 対策ラーニング（学生専用）
+            作業療法士 国家試験 対策ラーニング
           </span>
           <h1 className="text-xl sm:text-2xl font-bold mt-1">過去問演習 ＆ 今日の小テスト</h1>
           <p className="text-xs sm:text-sm text-teal-100 mt-1 max-w-xl">
@@ -275,8 +337,8 @@ export const StudentView: React.FC<StudentViewProps> = ({
               </div>
               <button
                 type="button"
-                onClick={openProfileDialog}
-                className="ml-1 p-1 text-teal-200 hover:text-white hover:bg-white/10 rounded-lg transition-colors cursor-pointer"
+                onClick={() => setShowRegistrationModal(true)}
+                className="ml-1 p-1 text-teal-200 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
                 title="学籍番号・学年の変更"
               >
                 <Edit3 className="w-3.5 h-3.5" />
@@ -285,8 +347,8 @@ export const StudentView: React.FC<StudentViewProps> = ({
           ) : (
             <button
               type="button"
-              onClick={openProfileDialog}
-              className="px-3.5 py-2.5 bg-amber-400 hover:bg-amber-300 text-amber-950 font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 animate-pulse cursor-pointer"
+              onClick={() => setShowRegistrationModal(true)}
+              className="px-3.5 py-2.5 bg-amber-400 hover:bg-amber-300 text-amber-950 font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 animate-pulse"
             >
               <UserCheck className="w-4 h-4" />
               <span>学籍番号を端末に登録</span>
@@ -356,13 +418,11 @@ export const StudentView: React.FC<StudentViewProps> = ({
           setPendingTestToStart(null);
         }}
         onSaved={(newProfile) => {
-          setInternalProfile(newProfile);
-          if (onProfileUpdate) {
-            onProfileUpdate(newProfile);
-          }
+          setStudentProfile(newProfile);
           setShowRegistrationModal(false);
           setRegistrationToast(`学籍番号「${newProfile.studentId}」（${newProfile.grade}年生）をこの端末に登録しました！`);
           setTimeout(() => setRegistrationToast(null), 5000);
+          // If a test was waiting to start, launch it now with newProfile immediately!
           if (pendingTestToStart) {
             const test = pendingTestToStart;
             setPendingTestToStart(null);
@@ -421,7 +481,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
         </button>
       </div>
 
-      {/* 🔔 配信中の小テストがある場合の通知バナー */}
+      {/* 🔔 配信中の小テストがある場合の通知バナー (過去問検索タブ上部に表示) */}
       {deliveredTests.length > 0 && activeTab === 'practice' && (
         <div className="bg-gradient-to-r from-amber-500/15 via-teal-500/10 to-emerald-500/15 border-2 border-amber-400/80 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm animate-fade-in">
           <div className="flex items-start sm:items-center gap-3.5">
@@ -460,26 +520,192 @@ export const StudentView: React.FC<StudentViewProps> = ({
 
       {/* TAB 1: 過去問検索・演習 */}
       {activeTab === 'practice' && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left Column: Search & Settings Controls */}
-          <div className="lg:col-span-1 space-y-5">
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-sm font-bold text-slate-900 flex items-center">
-                  <Search className="w-4 h-4 text-teal-600 mr-1.5" />
-                  過去問検索フィルター
-                </h2>
-                {(selectedMajorCategory !== 'all' || selectedSubCategory !== 'all' || selectedYear !== 'all' || searchKeyword || filterPickTwoOnly) && (
-                  <button
-                    onClick={handleResetFilters}
-                    className="text-xs text-slate-500 hover:text-teal-700 flex items-center gap-1"
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                    リセット
-                  </button>
-                )}
+        <div className="space-y-6">
+          {/* 🎯 自主学習の解答記録・進捗サマリー & クイック抽出 */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3.5">
+              <div className="flex items-start sm:items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-teal-50 text-teal-700 flex items-center justify-center font-bold shrink-0">
+                  <Target className="w-5 h-5 text-teal-600" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2 className="text-base font-bold text-slate-900">
+                      自主学習の解答記録・進捗状況
+                    </h2>
+                    <span className="text-[11px] font-bold text-teal-800 bg-teal-50 px-2.5 py-0.5 rounded-full border border-teal-200 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-teal-500 animate-pulse" />
+                      自動記憶中
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    解いた問題の正誤を端末に自動記録。<strong>「間違えた問題」</strong>や<strong>「まだ解いていない問題」</strong>だけをワンクリックで抽出できます。
+                  </p>
+                </div>
               </div>
 
+              {/* Progress Percentage Badge */}
+              <div className="flex items-center gap-3 bg-slate-50 px-3.5 py-2 rounded-xl border border-slate-200/80 self-start sm:self-auto shrink-0">
+                <div className="text-right">
+                  <div className="text-[10px] font-semibold text-slate-500">全体進捗率</div>
+                  <div className="text-lg font-black text-slate-900 leading-none mt-0.5">
+                    {studyStats.attemptedPercent}%
+                    <span className="text-xs font-normal text-slate-500 ml-1">
+                      ({studyStats.attempted}/{studyStats.total}問)
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Visual Progress Bar */}
+            <div className="space-y-1.5">
+              <div className="w-full bg-slate-100 h-3 rounded-full overflow-hidden flex shadow-inner">
+                <div 
+                  className="bg-emerald-500 h-full transition-all duration-500"
+                  style={{ width: `${studyStats.total > 0 ? (studyStats.correct / studyStats.total) * 100 : 0}%` }}
+                  title={`正解済み: ${studyStats.correct}問`}
+                />
+                <div 
+                  className="bg-rose-500 h-full transition-all duration-500"
+                  style={{ width: `${studyStats.total > 0 ? (studyStats.incorrect / studyStats.total) * 100 : 0}%` }}
+                  title={`間違えた問題（要復習）: ${studyStats.incorrect}問`}
+                />
+              </div>
+              <div className="flex items-center justify-between text-xs text-slate-500 flex-wrap gap-2">
+                <div className="flex items-center gap-3">
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+                    <span>正解済み: <strong className="text-slate-800 font-bold">{studyStats.correct}</strong>問</span>
+                  </span>
+                  <span className="text-slate-300">|</span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
+                    <span>間違えた問題（要復習）: <strong className="text-rose-700 font-bold">{studyStats.incorrect}</strong>問</span>
+                  </span>
+                </div>
+                <span className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-slate-300" />
+                  <span>未解答: <strong className="text-slate-700 font-bold">{studyStats.unattempted}</strong>問</span>
+                </span>
+              </div>
+            </div>
+
+            {/* 4 Extraction Filter Buttons */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
+              {/* All */}
+              <button
+                type="button"
+                onClick={() => setStudyFilter('all')}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                  studyFilter === 'all'
+                    ? 'bg-slate-900 text-white border-slate-900 shadow-sm ring-2 ring-slate-400'
+                    : 'bg-slate-50 hover:bg-slate-100 text-slate-800 border-slate-200'
+                }`}
+              >
+                <div className="text-[11px] font-semibold opacity-75">全問題を表示</div>
+                <div className="text-base font-black flex items-center justify-between mt-1">
+                  <span>{studyStats.total}問</span>
+                  <BookOpen className="w-4 h-4 opacity-70" />
+                </div>
+              </button>
+
+              {/* Incorrect (Mistakes to Review) */}
+              <button
+                type="button"
+                onClick={() => setStudyFilter('incorrect')}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                  studyFilter === 'incorrect'
+                    ? 'bg-rose-600 text-white border-rose-600 shadow-sm ring-2 ring-rose-300'
+                    : 'bg-rose-50 hover:bg-rose-100 text-rose-950 border-rose-200'
+                }`}
+              >
+                <div className="flex items-center justify-between text-[11px] font-bold text-rose-700">
+                  <span className={studyFilter === 'incorrect' ? 'text-white' : 'text-rose-700'}>
+                    ❌ 間違えた問題
+                  </span>
+                  {studyStats.incorrect > 0 && (
+                    <span className={`text-[9px] px-1.5 py-0.2 rounded-full font-extrabold ${
+                      studyFilter === 'incorrect' ? 'bg-white text-rose-700' : 'bg-rose-600 text-white animate-pulse'
+                    }`}>
+                      要復習
+                    </span>
+                  )}
+                </div>
+                <div className="text-base font-black flex items-center justify-between mt-1">
+                  <span className={studyFilter === 'incorrect' ? 'text-white' : 'text-rose-700'}>
+                    {studyStats.incorrect}問
+                  </span>
+                  <XCircle className={`w-4 h-4 ${studyFilter === 'incorrect' ? 'text-white' : 'text-rose-500'}`} />
+                </div>
+              </button>
+
+              {/* Unattempted */}
+              <button
+                type="button"
+                onClick={() => setStudyFilter('unattempted')}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                  studyFilter === 'unattempted'
+                    ? 'bg-teal-700 text-white border-teal-700 shadow-sm ring-2 ring-teal-300'
+                    : 'bg-teal-50/70 hover:bg-teal-100/70 text-teal-950 border-teal-200'
+                }`}
+              >
+                <div className={`text-[11px] font-bold ${studyFilter === 'unattempted' ? 'text-white' : 'text-teal-800'}`}>
+                  ❓ 未解答の問題
+                </div>
+                <div className="text-base font-black flex items-center justify-between mt-1">
+                  <span className={studyFilter === 'unattempted' ? 'text-white' : 'text-teal-800'}>
+                    {studyStats.unattempted}問
+                  </span>
+                  <HelpCircle className={`w-4 h-4 ${studyFilter === 'unattempted' ? 'text-white' : 'text-teal-600'}`} />
+                </div>
+              </button>
+
+              {/* Correct */}
+              <button
+                type="button"
+                onClick={() => setStudyFilter('correct')}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                  studyFilter === 'correct'
+                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm ring-2 ring-emerald-300'
+                    : 'bg-emerald-50/70 hover:bg-emerald-100/70 text-emerald-950 border-emerald-200'
+                }`}
+              >
+                <div className={`text-[11px] font-bold ${studyFilter === 'correct' ? 'text-white' : 'text-emerald-800'}`}>
+                  ✓ 正解済みの問題
+                </div>
+                <div className="text-base font-black flex items-center justify-between mt-1">
+                  <span className={studyFilter === 'correct' ? 'text-white' : 'text-emerald-800'}>
+                    {studyStats.correct}問
+                  </span>
+                  <CheckCircle2 className={`w-4 h-4 ${studyFilter === 'correct' ? 'text-white' : 'text-emerald-600'}`} />
+                </div>
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Left Column: Search & Settings Controls (1 col) */}
+            <div className="lg:col-span-1 space-y-5">
+              {/* Search Box */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-bold text-slate-900 flex items-center">
+                    <Search className="w-4 h-4 text-teal-600 mr-1.5" />
+                    過去問検索フィルター
+                  </h2>
+                  {(selectedMajorCategory !== 'all' || selectedSubCategory !== 'all' || selectedYear !== 'all' || searchKeyword || filterPickTwoOnly || filterHasImageOnly || studyFilter !== 'all') && (
+                    <button
+                      onClick={handleResetFilters}
+                      className="text-xs text-slate-500 hover:text-teal-700 flex items-center gap-1 cursor-pointer"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      リセット
+                    </button>
+                  )}
+                </div>
+
+              {/* Keyword Search */}
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1.5">
                   キーワード検索
@@ -496,6 +722,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
                 </div>
               </div>
 
+              {/* Major Category selector */}
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1.5">
                   分野（大項目）
@@ -504,7 +731,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
                   value={selectedMajorCategory}
                   onChange={(e) => {
                     setSelectedMajorCategory(e.target.value);
-                    setSelectedSubCategory('all');
+                    setSelectedSubCategory('all'); // Reset subcategory when major category changes
                   }}
                   className="w-full px-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 font-medium"
                 >
@@ -523,6 +750,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
                 </select>
               </div>
 
+              {/* Sub Category selector */}
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1.5">
                   中項目（（）内指定）
@@ -549,6 +777,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
                 </select>
               </div>
 
+              {/* Year selector */}
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1.5">
                   実施回・年
@@ -567,6 +796,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
                 </select>
               </div>
 
+              {/* Multiple Choice (Pick 2) & Image Filters */}
               <div className="pt-2 border-t border-slate-100 space-y-2">
                 <label className="flex items-center space-x-2 text-xs font-semibold text-slate-700 cursor-pointer bg-slate-50 p-2.5 rounded-xl border border-slate-200/80 hover:bg-teal-50/50 hover:border-teal-200 transition-colors">
                   <input
@@ -598,6 +828,88 @@ export const StudentView: React.FC<StudentViewProps> = ({
                     「図・画像あり」問題のみに絞り込む
                   </span>
                 </label>
+              </div>
+
+              {/* 解答状況・学習フィルター */}
+              <div className="pt-3 border-t border-slate-100 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                    <Target className="w-3.5 h-3.5 text-teal-600" />
+                    解答・学習状況で絞り込み
+                  </label>
+                  {studyFilter !== 'all' && (
+                    <button
+                      type="button"
+                      onClick={() => setStudyFilter('all')}
+                      className="text-[10px] text-teal-700 hover:underline font-bold"
+                    >
+                      すべてに戻す
+                    </button>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setStudyFilter('all')}
+                    className={`py-2 px-2.5 text-xs font-bold rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer ${
+                      studyFilter === 'all'
+                        ? 'bg-slate-900 text-white border-slate-900 shadow-2xs'
+                        : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+                    }`}
+                  >
+                    <span>すべて</span>
+                    <span className="text-[10px] opacity-75">{studyStats.total}問</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setStudyFilter('incorrect')}
+                    className={`py-2 px-2.5 text-xs font-bold rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer ${
+                      studyFilter === 'incorrect'
+                        ? 'bg-rose-600 text-white border-rose-600 shadow-2xs ring-2 ring-rose-300'
+                        : 'bg-rose-50 hover:bg-rose-100 text-rose-800 border-rose-200'
+                    }`}
+                  >
+                    <span className="flex items-center gap-1">
+                      <XCircle className="w-3 h-3" />
+                      <span>間違えた問題</span>
+                    </span>
+                    <span className="text-[10px] font-black">{studyStats.incorrect}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setStudyFilter('unattempted')}
+                    className={`py-2 px-2.5 text-xs font-bold rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer ${
+                      studyFilter === 'unattempted'
+                        ? 'bg-teal-700 text-white border-teal-700 shadow-2xs ring-2 ring-teal-300'
+                        : 'bg-teal-50 hover:bg-teal-100 text-teal-800 border-teal-200'
+                    }`}
+                  >
+                    <span className="flex items-center gap-1">
+                      <HelpCircle className="w-3 h-3" />
+                      <span>未解答</span>
+                    </span>
+                    <span className="text-[10px] font-black">{studyStats.unattempted}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setStudyFilter('correct')}
+                    className={`py-2 px-2.5 text-xs font-bold rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer ${
+                      studyFilter === 'correct'
+                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs ring-2 ring-emerald-300'
+                        : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200'
+                    }`}
+                  >
+                    <span className="flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3" />
+                      <span>正解済み</span>
+                    </span>
+                    <span className="text-[10px] font-black">{studyStats.correct}</span>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -637,6 +949,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
                 </p>
               </div>
 
+              {/* Options */}
               <div className="space-y-2 pt-2 border-t border-slate-100 text-xs">
                 <label className="flex items-center space-x-2 cursor-pointer text-slate-700">
                   <input
@@ -659,6 +972,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
                 </label>
               </div>
 
+              {/* Start Button */}
               <button
                 type="button"
                 onClick={handleStartPractice}
@@ -673,12 +987,14 @@ export const StudentView: React.FC<StudentViewProps> = ({
             </div>
           </div>
 
-          {/* Right Column: Question List Preview */}
+          {/* Right Column: Question List Preview (2 cols) */}
           <div className="lg:col-span-2 space-y-4">
-            <div className="flex items-center justify-between bg-white px-4 py-3 rounded-xl border border-slate-200">
-              <div className="text-xs font-semibold text-slate-700 flex items-center space-x-2">
-                <Filter className="w-4 h-4 text-teal-600" />
-                <span>検索該当: <strong className="text-teal-700 font-bold">{filteredQuestions.length}</strong> 問</span>
+            <div className="flex items-center justify-between bg-white px-4 py-3 rounded-xl border border-slate-200 flex-wrap gap-2">
+              <div className="text-xs font-semibold text-slate-700 flex items-center flex-wrap gap-2">
+                <div className="flex items-center gap-1.5">
+                  <Filter className="w-4 h-4 text-teal-600" />
+                  <span>該当問題: <strong className="text-teal-700 font-bold">{filteredQuestions.length}</strong> 問</span>
+                </div>
                 {selectedMajorCategory !== 'all' && (
                   <span className="bg-teal-50 text-teal-700 px-2 py-0.5 rounded text-[11px]">
                     {selectedMajorCategory}
@@ -690,7 +1006,31 @@ export const StudentView: React.FC<StudentViewProps> = ({
                     2つ選べ
                   </span>
                 )}
+                {studyFilter === 'incorrect' && (
+                  <span className="bg-rose-100 text-rose-800 border border-rose-200 px-2 py-0.5 rounded text-[11px] font-bold flex items-center gap-1">
+                    <XCircle className="w-3 h-3 text-rose-600" />
+                    間違えた問題のみ
+                  </span>
+                )}
+                {studyFilter === 'unattempted' && (
+                  <span className="bg-teal-100 text-teal-800 border border-teal-200 px-2 py-0.5 rounded text-[11px] font-bold flex items-center gap-1">
+                    <HelpCircle className="w-3 h-3 text-teal-600" />
+                    未解答のみ
+                  </span>
+                )}
+                {studyFilter === 'correct' && (
+                  <span className="bg-emerald-100 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded text-[11px] font-bold flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                    正解済みのみ
+                  </span>
+                )}
               </div>
+
+              {filteredQuestions.length > 0 && (
+                <span className="text-[11px] text-slate-400">
+                  {visibleQuestions.length}問 表示中
+                </span>
+              )}
             </div>
 
             {questions.length === 0 ? (
@@ -704,8 +1044,8 @@ export const StudentView: React.FC<StudentViewProps> = ({
                   <p className="font-bold text-base text-slate-800">過去問データを読み込み中...</p>
                   <p className="text-xs text-slate-500 max-w-md mx-auto">
                     {deliveredTests.length > 0
-                      ? '配信中の小テストを受験する場合は、上の「今日のテスト」タブを開いてください。'
-                      : 'サーバーから過去問データを取得しています。数秒お待ちください。'}
+                      ? '配信中の小テストを受験する場合は、上の「今日の小テスト」タブを開いてください。'
+                      : 'データベースから過去問データを取得しています。数秒お待ちください。'}
                   </p>
                 </div>
                 {deliveredTests.length > 0 && (
@@ -719,16 +1059,88 @@ export const StudentView: React.FC<StudentViewProps> = ({
                 )}
               </div>
             ) : filteredQuestions.length === 0 ? (
-              <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center text-slate-500 space-y-2">
-                <Filter className="w-8 h-8 text-slate-400 mx-auto" />
-                <p className="font-semibold text-sm">該当する過去問が見つかりません</p>
-                <p className="text-xs">分野や中項目、キーワードを変更して検索してください。</p>
-                <button
-                  onClick={handleResetFilters}
-                  className="text-xs text-teal-600 underline font-semibold mt-2"
-                >
-                  フィルターをリセット
-                </button>
+              <div className="bg-white rounded-2xl border border-slate-200 p-10 sm:p-12 text-center text-slate-500 space-y-3">
+                {studyFilter === 'incorrect' ? (
+                  <div className="space-y-3">
+                    <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto">
+                      <CheckCircle2 className="w-7 h-7" />
+                    </div>
+                    <div>
+                      <p className="font-bold text-base text-slate-900">
+                        {studyStats.attempted === 0
+                          ? 'まだ解答した問題がありません'
+                          : '現在、間違えた問題（要復習）はありません！'}
+                      </p>
+                      <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
+                        {studyStats.attempted === 0
+                          ? '過去問演習や小テストを解答すると、間違えた問題がここに自動集約されます。'
+                          : 'これまでに解いた問題はすべて正解しています！素晴らしい調子です。未解答の問題にも挑戦してみましょう。'}
+                      </p>
+                    </div>
+                    <div className="flex items-center justify-center gap-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setStudyFilter('unattempted')}
+                        className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <HelpCircle className="w-3.5 h-3.5" />
+                        <span>未解答の問題（{studyStats.unattempted}問）を表示</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setStudyFilter('all')}
+                        className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-colors cursor-pointer"
+                      >
+                        すべての問題を表示
+                      </button>
+                    </div>
+                  </div>
+                ) : studyFilter === 'unattempted' ? (
+                  <div className="space-y-3">
+                    <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto">
+                      <Award className="w-7 h-7" />
+                    </div>
+                    <div>
+                      <p className="font-bold text-base text-slate-900">
+                        すべての問題に一度以上挑戦済みです！
+                      </p>
+                      <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
+                        収録されている問題をすべて解答しました。間違えた問題の再復習で知識をさらに固めましょう。
+                      </p>
+                    </div>
+                    <div className="flex items-center justify-center gap-2 pt-2">
+                      {studyStats.incorrect > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setStudyFilter('incorrect')}
+                          className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors inline-flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                          <span>間違えた問題（{studyStats.incorrect}問）を復習</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setStudyFilter('all')}
+                        className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-colors cursor-pointer"
+                      >
+                        すべての問題を表示
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <Filter className="w-8 h-8 text-slate-400 mx-auto" />
+                    <p className="font-semibold text-sm text-slate-700">該当する過去問が見つかりません</p>
+                    <p className="text-xs">分野や中項目、キーワード、解答状況の条件を変更して検索してください。</p>
+                    <button
+                      onClick={handleResetFilters}
+                      className="text-xs text-teal-600 underline font-semibold mt-2 cursor-pointer"
+                    >
+                      フィルターをリセット
+                    </button>
+                  </>
+                )}
               </div>
             ) : (
               <div className="space-y-3 max-h-[720px] overflow-y-auto pr-1">
@@ -737,17 +1149,41 @@ export const StudentView: React.FC<StudentViewProps> = ({
                   const major = q.majorCategory || p.major;
                   const sub = q.subCategory || p.sub;
                   const isPick2 = isPickTwoQuestion(q.question, q.answer);
+                  const rec = studyRecords[q.id];
 
                   return (
                     <div
                       key={q.id}
-                      className="bg-white rounded-xl border border-slate-200 p-4 hover:border-teal-300 transition-colors shadow-2xs space-y-2"
+                      className={`bg-white rounded-xl border p-4 transition-colors shadow-2xs space-y-2 ${
+                        rec && rec.totalAttempts > 0 && !rec.lastIsCorrect
+                          ? 'border-rose-200 hover:border-rose-400 bg-rose-50/10'
+                          : 'border-slate-200 hover:border-teal-300'
+                      }`}
                     >
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center flex-wrap gap-1.5">
                           <span className="font-mono text-xs font-bold bg-slate-900 text-white px-2 py-0.5 rounded">
                             {q.id}
                           </span>
+
+                          {/* 学習・正誤状況バッジ */}
+                          {(!rec || rec.totalAttempts === 0) ? (
+                            <span className="text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200 px-2 py-0.5 rounded flex items-center gap-1">
+                              <HelpCircle className="w-3 h-3 text-slate-400" />
+                              未解答
+                            </span>
+                          ) : rec.lastIsCorrect ? (
+                            <span className="text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-300 px-2 py-0.5 rounded flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                              正解済み {rec.totalAttempts > 1 ? `(${rec.correctAttempts}/${rec.totalAttempts}回)` : ''}
+                            </span>
+                          ) : (
+                            <span className="text-[11px] font-extrabold bg-rose-50 text-rose-700 border border-rose-300 px-2 py-0.5 rounded flex items-center gap-1">
+                              <XCircle className="w-3 h-3 text-rose-600" />
+                              要復習・前回不正解 {rec.totalAttempts > 1 ? `(${rec.incorrectAttempts}回ミス)` : ''}
+                            </span>
+                          )}
+
                           <span className="text-xs font-semibold bg-teal-50 text-teal-700 border border-teal-200 px-2 py-0.5 rounded">
                             {major}
                           </span>
@@ -824,7 +1260,8 @@ export const StudentView: React.FC<StudentViewProps> = ({
             )}
           </div>
         </div>
-      )}
+      </div>
+    )}
 
       {/* TAB 2: 今日のテスト (教員配信) */}
       {activeTab === 'today-tests' && (
@@ -835,7 +1272,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
               <p className="text-xs sm:text-sm text-slate-500">学年や個人宛に配信された「今日のテスト」がここに表示されます。</p>
             </div>
 
-            {/* Grade Filter Toggle */}
+            {/* Grade Filter Toggle (if student is registered) */}
             {studentProfile && (
               <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl text-xs font-semibold self-start sm:self-auto">
                 <button
@@ -850,7 +1287,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
                   <GraduationCap className="w-3.5 h-3.5 text-teal-600" />
                   <span>{studentProfile.grade}年生宛のみ表示</span>
                   <span className="bg-teal-100 text-teal-800 text-[10px] px-1.5 py-0.2 rounded-full font-bold">
-                    {deliveredTests.filter(t => isTestEligibleForStudent(t, studentProfile).eligible).length}
+                    {deliveredTests.filter(t => isTestEligibleForStudent(t, studentProfile)).length}
                   </span>
                 </button>
                 <button
@@ -948,7 +1385,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
                     全学年や他学年向けのテストを確認したい場合は、右上の「全件表示」を押してください。
                   </span>
                 ) : (
-                  <span>先生から小テストが配信されると、ここに表示されます。</span>
+                  <span>上部の「教員モード」に切り替えて「小テストを作問・配信」すると、ここに届きます。</span>
                 )}
               </p>
               {studentProfile && filterMyGradeOnly && deliveredTests.length > 0 && (
@@ -980,6 +1417,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
                             今日のテスト
                           </span>
 
+                          {/* Grade Target Badge */}
                           {test.targetType === 'grade' && test.targetGrades && test.targetGrades.length > 0 && (
                             <span className="text-xs font-bold bg-teal-50 text-teal-800 border border-teal-200 px-2.5 py-0.5 rounded-full flex items-center gap-1">
                               <GraduationCap className="w-3 h-3 text-teal-600" />
@@ -1082,8 +1520,89 @@ export const StudentView: React.FC<StudentViewProps> = ({
       {/* TAB 3: 学習履歴・成績 */}
       {activeTab === 'history' && (
         <div className="space-y-6">
+          {/* 問題ごとの学習記憶・進捗サマリーカード */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-teal-50 text-teal-700 rounded-xl">
+                  <Target className="w-5 h-5 text-teal-600" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    全過去問の学習記憶・習得状況
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    端末に記録された問題ごとの解答ステータスです。「過去問演習」で間違えた問題のみを復習できます。
+                  </p>
+                </div>
+              </div>
+
+              {studyStats.attempted > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm('これまでの問題解答記録（正誤履歴）をリセットして初期状態に戻しますか？\n（※過去の小テスト受験履歴は削除されません）')) {
+                      clearAllStudyRecords();
+                      setStudyRecords({});
+                    }
+                  }}
+                  className="text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50 border border-rose-200 px-3 py-1.5 rounded-xl font-bold transition-colors flex items-center gap-1.5 self-start sm:self-auto cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>解答記憶をリセット</span>
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-100">
+                <div className="text-xs text-slate-500 font-medium">総問題数</div>
+                <div className="text-xl font-black text-slate-900 mt-0.5">{studyStats.total}問</div>
+              </div>
+              <div className="bg-teal-50/70 p-3.5 rounded-xl border border-teal-100">
+                <div className="text-xs text-teal-700 font-semibold">解答済み進捗</div>
+                <div className="text-xl font-black text-teal-900 mt-0.5">
+                  {studyStats.attempted}問 
+                  <span className="text-xs font-normal text-teal-700 ml-1">({studyStats.attemptedPercent}%)</span>
+                </div>
+              </div>
+              <div className="bg-rose-50/80 p-3.5 rounded-xl border border-rose-100">
+                <div className="text-xs text-rose-700 font-bold flex items-center gap-1">
+                  <XCircle className="w-3.5 h-3.5" />
+                  <span>要復習（間違えた問題）</span>
+                </div>
+                <div className="text-xl font-black text-rose-800 mt-0.5">{studyStats.incorrect}問</div>
+              </div>
+              <div className="bg-emerald-50/80 p-3.5 rounded-xl border border-emerald-100">
+                <div className="text-xs text-emerald-700 font-bold flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>正解済み問題</span>
+                </div>
+                <div className="text-xl font-black text-emerald-800 mt-0.5">{studyStats.correct}問</div>
+              </div>
+            </div>
+
+            {studyStats.incorrect > 0 && (
+              <div className="p-3 bg-rose-50 rounded-xl border border-rose-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-rose-900">
+                <span className="font-medium">
+                  💡 前回間違えた問題が <strong>{studyStats.incorrect}問</strong> あります。「過去問検索・演習」で抽出してすぐに復習できます。
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStudyFilter('incorrect');
+                    setActiveTab('practice');
+                  }}
+                  className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg shrink-0 transition-colors shadow-2xs cursor-pointer"
+                >
+                  間違えた問題を今すぐ復習
+                </button>
+              </div>
+            )}
+          </div>
+
           <div>
-            <h2 className="text-lg font-bold text-slate-900">演習および小テストの解答履歴</h2>
+            <h2 className="text-lg font-bold text-slate-900">演習および小テストの受験履歴</h2>
             <p className="text-xs sm:text-sm text-slate-500">過去の正答率と見直しが確認できます。</p>
           </div>
 

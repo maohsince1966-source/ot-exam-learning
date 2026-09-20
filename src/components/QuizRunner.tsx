@@ -30,6 +30,7 @@ import {
 import { QuestionImage } from './QuestionImage';
 import { submitTestResultToCloud } from '../services/testSyncService';
 import { getStudentProfile, saveStudentProfile } from '../services/studentRosterService';
+import { recordSingleQuestionAttempt, recordQuizAttempt } from '../services/studentStudyHistoryService';
 
 interface QuizRunnerProps {
   questions: Question[];
@@ -123,6 +124,8 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
             ...rex,
             [currentQ.id]: true
           }));
+          const isCorrect = evaluateAnswer(updated, currentQ.answer, currentQ.question).isCorrect;
+          recordSingleQuestionAttempt(currentQ.id, isCorrect, updated);
         }
 
         return {
@@ -142,6 +145,8 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
           ...prev,
           [currentQ.id]: true
         }));
+        const isCorrect = evaluateAnswer([choiceNum], currentQ.answer, currentQ.question).isCorrect;
+        recordSingleQuestionAttempt(currentQ.id, isCorrect, [choiceNum]);
       }
     }
   };
@@ -220,6 +225,7 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
     };
 
     setIsSubmitted(true);
+    recordQuizAttempt(result, questions);
     onFinish(result);
 
     // If this is an assigned test, automatically submit to Firestore & Express server!

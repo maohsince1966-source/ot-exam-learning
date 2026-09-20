@@ -13,6 +13,7 @@ import {
 } from './services/testSyncService';
 import { getStudentProfile, isTestEligibleForStudent } from './services/studentRosterService';
 import { Loader2, AlertCircle } from 'lucide-react';
+import { recordQuizAttempt } from './services/studentStudyHistoryService';
 
 export const App: React.FC = () => {
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -152,6 +153,7 @@ export const App: React.FC = () => {
       }
       return updated;
     });
+    recordQuizAttempt(result, activeQuiz?.questions || questions);
   };
 
   // Join test by 6-character code
