@@ -1,5 +1,5 @@
-import React from 'react';
-import { GraduationCap, BookOpen, CheckCircle2 } from 'lucide-react';
+import React, { useState } from 'react';
+import { GraduationCap, BookOpen, CheckCircle2, RefreshCw } from 'lucide-react';
 import { PWAInstallButton } from './PWAInstallButton';
 import { StudentLocalProfile } from '../types';
 
@@ -8,14 +8,28 @@ interface StudentNavbarProps {
   onOpenProfile?: () => void;
   onOpenProfileModal?: () => void;
   pendingTestsCount?: number;
+  onRefreshTests?: () => Promise<void> | void;
 }
 
 export const StudentNavbar: React.FC<StudentNavbarProps> = ({
   studentProfile,
   onOpenProfile,
   onOpenProfileModal,
-  pendingTestsCount = 0
+  pendingTestsCount = 0,
+  onRefreshTests
 }) => {
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    if (!onRefreshTests || isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await onRefreshTests();
+    } finally {
+      setTimeout(() => setIsRefreshing(false), 600);
+    }
+  };
+
   const handleOpen = () => {
     if (onOpenProfile) onOpenProfile();
     else if (onOpenProfileModal) onOpenProfileModal();
@@ -45,6 +59,20 @@ export const StudentNavbar: React.FC<StudentNavbarProps> = ({
 
           {/* Right Controls */}
           <div className="flex items-center space-x-2 sm:space-x-3">
+            {/* Refresh Tests Button */}
+            {onRefreshTests && (
+              <button
+                type="button"
+                onClick={handleRefresh}
+                disabled={isRefreshing}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-teal-800 bg-teal-50 hover:bg-teal-100 active:bg-teal-200 border border-teal-200 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
+                title="最新の配信テストを取得"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                <span className="hidden sm:inline">最新に更新</span>
+              </button>
+            )}
+
             {/* PWA Install Button */}
             <PWAInstallButton />
 

@@ -49,6 +49,9 @@ interface StudentViewProps {
   questions: Question[];
   deliveredTests: DeliveredTest[];
   quizHistory: QuizAttemptResult[];
+  studentProfile?: StudentLocalProfile | null;
+  onOpenProfile?: () => void;
+  onProfileUpdate?: (profile: StudentLocalProfile) => void;
   onStartQuiz: (
     selectedQuestions: Question[], 
     title: string, 
@@ -58,28 +61,62 @@ interface StudentViewProps {
   onViewHistoryResult: (result: QuizAttemptResult) => void;
   onSwitchToTeacherMode?: () => void;
   onJoinByCode?: (code: string) => Promise<boolean>;
+  onRefreshTests?: () => Promise<void> | void;
 }
 
 export const StudentView: React.FC<StudentViewProps> = ({
   questions,
   deliveredTests,
   quizHistory,
+  studentProfile: propStudentProfile,
+  onOpenProfile,
+  onProfileUpdate,
   onStartQuiz,
   onViewHistoryResult,
   onSwitchToTeacherMode,
-  onJoinByCode
+  onJoinByCode,
+  onRefreshTests
 }) => {
-  const [activeTab, setActiveTab] = useState<'practice' | 'today-tests' | 'history'>('practice');
+  const [activeTab, setActiveTab] = useState<'practice' | 'today-tests' | 'history'>(() => {
+    return deliveredTests.length > 0 ? 'today-tests' : 'practice';
+  });
   const [searchKeyword, setSearchKeyword] = useState('');
   const [inputTestCode, setInputTestCode] = useState('');
   const [isJoiningCode, setIsJoiningCode] = useState(false);
   const [codeError, setCodeError] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Student device profile state
-  const [studentProfile, setStudentProfile] = useState<StudentLocalProfile | null>(() => getStudentProfile());
+  const [studentProfile, setStudentProfile] = useState<StudentLocalProfile | null>(() => propStudentProfile || getStudentProfile());
+
+  useEffect(() => {
+    if (propStudentProfile) {
+      setStudentProfile(propStudentProfile);
+    }
+  }, [propStudentProfile]);
+
+  const handleManualRefresh = async () => {
+    if (!onRefreshTests || isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await onRefreshTests();
+    } finally {
+      setTimeout(() => setIsRefreshing(false), 600);
+    }
+  };
   const [showRegistrationModal, setShowRegistrationModal] = useState(false);
   const [filterMyGradeOnly, setFilterMyGradeOnly] = useState(true);
   const [registrationToast, setRegistrationToast] = useState<string | null>(null);
+
+  // Auto-switch to today-tests if delivered tests arrive while viewing
+  useEffect(() => {
+    if (deliveredTests.length > 0 && activeTab === 'practice') {
+      // If student hasn't searched yet, gently prioritize today-tests
+      if (!searchKeyword.trim()) {
+        setActiveTab('today-tests');
+      }
+    }
+  }, [deliveredTests.length]);
 
   // Eligible delivered tests filtered by student's grade / ID
   const eligibleDeliveredTests = useMemo(() => {
@@ -430,6 +467,102 @@ export const StudentView: React.FC<StudentViewProps> = ({
           }
         }}
       />
+
+      {/* 🔄 クイックツールバー: 「最新に更新 / 再確認」＆小テスト配信ステータス＆参加コード入力 */}
+      <div className="bg-gradient-to-r from-teal-50 via-white to-amber-50 border border-teal-200/80 rounded-2xl p-3.5 sm:p-4 shadow-xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-teal-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+            <Sparkles className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-bold text-slate-800">
+                小テスト配信ステータス
+              </span>
+              {eligibleDeliveredTests.length > 0 ? (
+                <span className="bg-amber-500 text-white text-[11px] font-extrabold px-2.5 py-0.5 rounded-full animate-pulse shadow-2xs">
+                  {eligibleDeliveredTests.length}件 配信中！
+                </span>
+              ) : (
+                <span className="bg-slate-200 text-slate-700 text-[11px] font-bold px-2 py-0.5 rounded-full">
+                  待機中
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-500">
+              {eligibleDeliveredTests.length > 0 
+                ? '先生から小テストが配信されています。「今日のテスト」から受験してください。'
+                : '先生が配信すると自動反映されます。反映されない場合は「最新に更新」を押してください。'}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+          {/* 最新に更新 / 再確認 ボタン */}
+          {onRefreshTests && (
+            <button
+              type="button"
+              onClick={handleManualRefresh}
+              disabled={isRefreshing}
+              className="flex-1 sm:flex-initial px-3.5 py-2 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white text-xs font-bold rounded-xl shadow-xs hover:shadow transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+              title="最新の配信テストを取得・再確認"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+              <span>{isRefreshing ? '確認中...' : '最新に更新 / 再確認'}</span>
+            </button>
+          )}
+
+          {/* 6桁コード直接入力クイックフォーム */}
+          {onJoinByCode && (
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!inputTestCode.trim() || isJoiningCode) return;
+                setCodeError(null);
+                setIsJoiningCode(true);
+                try {
+                  const success = await onJoinByCode(inputTestCode.trim());
+                  if (success) {
+                    setInputTestCode('');
+                    setActiveTab('today-tests');
+                  } else {
+                    setCodeError('小テストが見つかりませんでした');
+                  }
+                } catch {
+                  setCodeError('取得エラー');
+                } finally {
+                  setIsJoiningCode(false);
+                }
+              }}
+              className="flex items-center gap-1.5 flex-1 sm:flex-initial"
+            >
+              <input
+                type="text"
+                placeholder="6桁コード"
+                value={inputTestCode}
+                onChange={(e) => {
+                  setInputTestCode(e.target.value.toUpperCase());
+                  if (codeError) setCodeError(null);
+                }}
+                maxLength={10}
+                className="uppercase font-mono text-xs px-2.5 py-2 bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-teal-500 focus:outline-none w-24 text-center font-bold tracking-wider text-slate-800 placeholder:text-slate-400 placeholder:font-normal"
+              />
+              <button
+                type="submit"
+                disabled={!inputTestCode.trim() || isJoiningCode}
+                className="px-3 py-2 bg-slate-800 hover:bg-slate-900 disabled:opacity-40 text-white text-xs font-bold rounded-xl transition-colors shrink-0 shadow-xs cursor-pointer"
+              >
+                {isJoiningCode ? '参加中...' : 'コード参加'}
+              </button>
+            </form>
+          )}
+        </div>
+      </div>
+      {codeError && (
+        <p className="text-xs text-rose-600 font-semibold px-2 -mt-2">
+          ⚠️ {codeError}
+        </p>
+      )}
 
       {/* Tabs */}
       <div className="flex border-b border-slate-200 space-x-2 sm:space-x-4">
@@ -1272,40 +1405,56 @@ export const StudentView: React.FC<StudentViewProps> = ({
               <p className="text-xs sm:text-sm text-slate-500">学年や個人宛に配信された「今日のテスト」がここに表示されます。</p>
             </div>
 
-            {/* Grade Filter Toggle (if student is registered) */}
-            {studentProfile && (
-              <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl text-xs font-semibold self-start sm:self-auto">
+            <div className="flex items-center gap-2 flex-wrap self-start sm:self-auto">
+              {/* 最新に更新 / 再確認 ボタン */}
+              {onRefreshTests && (
                 <button
                   type="button"
-                  onClick={() => setFilterMyGradeOnly(true)}
-                  className={`px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 ${
-                    filterMyGradeOnly
-                      ? 'bg-white text-teal-800 shadow-2xs font-bold'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
+                  onClick={handleManualRefresh}
+                  disabled={isRefreshing}
+                  className="px-3.5 py-1.5 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white text-xs font-bold rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  title="最新の配信テストを取得・再確認"
                 >
-                  <GraduationCap className="w-3.5 h-3.5 text-teal-600" />
-                  <span>{studentProfile.grade}年生宛のみ表示</span>
-                  <span className="bg-teal-100 text-teal-800 text-[10px] px-1.5 py-0.2 rounded-full font-bold">
-                    {deliveredTests.filter(t => isTestEligibleForStudent(t, studentProfile)).length}
-                  </span>
+                  <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                  <span>{isRefreshing ? '確認中...' : '最新に更新 / 再確認'}</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setFilterMyGradeOnly(false)}
-                  className={`px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 ${
-                    !filterMyGradeOnly
-                      ? 'bg-white text-slate-900 shadow-2xs font-bold'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  <span>全件表示</span>
-                  <span className="bg-slate-200 text-slate-700 text-[10px] px-1.5 py-0.2 rounded-full">
-                    {deliveredTests.length}
-                  </span>
-                </button>
-              </div>
-            )}
+              )}
+
+              {/* Grade Filter Toggle (if student is registered) */}
+              {studentProfile && (
+                <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl text-xs font-semibold">
+                  <button
+                    type="button"
+                    onClick={() => setFilterMyGradeOnly(true)}
+                    className={`px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 ${
+                      filterMyGradeOnly
+                        ? 'bg-white text-teal-800 shadow-2xs font-bold'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <GraduationCap className="w-3.5 h-3.5 text-teal-600" />
+                    <span>{studentProfile.grade}年生宛のみ表示</span>
+                    <span className="bg-teal-100 text-teal-800 text-[10px] px-1.5 py-0.2 rounded-full font-bold">
+                      {deliveredTests.filter(t => isTestEligibleForStudent(t, studentProfile)).length}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFilterMyGradeOnly(false)}
+                    className={`px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 ${
+                      !filterMyGradeOnly
+                        ? 'bg-white text-slate-900 shadow-2xs font-bold'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <span>全件表示</span>
+                    <span className="bg-slate-200 text-slate-700 text-[10px] px-1.5 py-0.2 rounded-full">
+                      {deliveredTests.length}
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Test Code Entry Box */}

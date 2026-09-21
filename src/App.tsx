@@ -13,6 +13,7 @@ import { QuizRunner } from './components/QuizRunner';
 import { ReceivedTestModal } from './components/ReceivedTestModal';
 import { TeacherAuthModal } from './components/TeacherAuthModal';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { StudentPortalGuideModal } from './components/StudentPortalGuideModal';
 import { decodeDeliveredTest, fetchTestFromServer, fetchAllServerTests, saveTestToServer } from './utils/shareTest';
 import { normalizeImageUrl } from './utils/imageHelper';
 import {
@@ -26,7 +27,7 @@ import {
   saveQuestionsToCloud
 } from './services/testSyncService';
 import { recordQuizAttempt } from './services/studentStudyHistoryService';
-import { AlertTriangle, Bell, ChevronRight } from 'lucide-react';
+import { AlertTriangle, Bell, ChevronRight, Lock } from 'lucide-react';
 
 const STORAGE_KEY_QUESTIONS = 'ot_exam_questions_db_v2';
 const STORAGE_KEY_DELIVERED = 'ot_exam_delivered_tests_v2';
@@ -34,6 +35,22 @@ const STORAGE_KEY_HISTORY = 'ot_exam_quiz_history_v2';
 
 export default function App() {
   const [mode, setMode] = useState<'student' | 'teacher'>('student');
+  const [isStudentStandalone, setIsStudentStandalone] = useState<boolean>(() => {
+    try {
+      const search = window.location.search;
+      const hash = window.location.hash;
+      const params = new URLSearchParams(search);
+      return params.get('role') === 'student' || 
+             params.get('view') === 'student' || 
+             params.get('student') === '1' ||
+             params.has('code') ||
+             hash.includes('code=') ||
+             hash.includes('student');
+    } catch {
+      return false;
+    }
+  });
+  const [showTeacherPortalGuide, setShowTeacherPortalGuide] = useState(false);
 
   // One-time cleanup for localStorage to prevent mobile QuotaExceeded and memory crashes
   useEffect(() => {
@@ -148,6 +165,9 @@ export default function App() {
             });
             const merged = Array.from(existingMap.values());
             merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+            try {
+              localStorage.setItem(STORAGE_KEY_DELIVERED, JSON.stringify(merged));
+            } catch {}
             return merged;
           });
 
@@ -190,6 +210,9 @@ export default function App() {
             });
             const merged = Array.from(existingMap.values());
             merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+            try {
+              localStorage.setItem(STORAGE_KEY_DELIVERED, JSON.stringify(merged));
+            } catch {}
             return merged;
           });
 
@@ -357,12 +380,22 @@ export default function App() {
       const hash = window.location.hash;
       const search = window.location.search;
 
-      // 1. Check for ?code=... or #code=...
+      // Check for ?code=... or #code=...
       const urlParams = new URLSearchParams(search);
       let codeParam = urlParams.get('code');
       if (!codeParam && hash) {
         const hashMatch = hash.match(/code=([^&]+)/);
         if (hashMatch) codeParam = hashMatch[1];
+      }
+
+      // Standalone student portal parameter check
+      const isStudentParam = urlParams.get('role') === 'student' || 
+                             urlParams.get('view') === 'student' || 
+                             urlParams.get('student') === '1' ||
+                             Boolean(codeParam);
+      if (isStudentParam) {
+        setIsStudentStandalone(true);
+        setMode('student');
       }
 
       if (codeParam) {
@@ -664,6 +697,8 @@ export default function App() {
       }
     } else {
       setMode('student');
+      // Trigger instant refresh of delivered tests on switching to student mode
+      syncAllTests();
     }
     if (activeQuiz) {
       setActiveQuiz(null); // Exit active quiz on mode switch
@@ -683,6 +718,9 @@ export default function App() {
         mode={mode}
         onToggleMode={handleRequestSwitchMode}
         pendingTestsCount={deliveredTests.length}
+        onRefreshTests={syncAllTests}
+        isStudentStandalone={isStudentStandalone}
+        onOpenStudentPortalGuide={() => setShowTeacherPortalGuide(true)}
       />
 
       {/* Offline Status Bar when disconnected */}
@@ -713,6 +751,7 @@ export default function App() {
             onSwitchToTeacherMode={() => handleRequestSwitchMode('teacher')}
             onJoinByCode={handleJoinByCode}
             onRefreshTests={syncAllTests}
+            isStudentStandalone={isStudentStandalone}
           />
         ) : (
           <TeacherView
@@ -846,10 +885,35 @@ export default function App() {
         onClose={() => setShowTeacherAuthModal(false)}
       />
 
+      {/* Global Student Portal Guide Modal for Teacher */}
+      {showTeacherPortalGuide && (
+        <StudentPortalGuideModal
+          onClose={() => setShowTeacherPortalGuide(false)}
+          latestTestCode={deliveredTests.length > 0 ? (deliveredTests[0].code || deliveredTests[0].id) : undefined}
+          latestTestTitle={deliveredTests.length > 0 ? deliveredTests[0].title : undefined}
+        />
+      )}
+
       {/* Footer */}
       <footer className="bg-white border-t border-slate-200 py-6 text-center text-xs text-slate-500">
         <p>© 作業療法士 国家試験 演習＆小テスト プラットフォーム</p>
-        <p className="mt-1 text-slate-400">Created by Shunsuke Usui.</p>
+        <div className="mt-2 flex items-center justify-center gap-3 text-slate-400">
+          <span>Created by Shunsuke Usui.</span>
+          {isStudentStandalone && (
+            <>
+              <span>•</span>
+              <button
+                type="button"
+                onClick={() => handleRequestSwitchMode('teacher')}
+                className="hover:text-slate-600 underline flex items-center gap-1 cursor-pointer"
+                title="教員管理モード（6桁暗証番号が必要です）"
+              >
+                <Lock className="w-3 h-3" />
+                <span>管理者・教員ログイン</span>
+              </button>
+            </>
+          )}
+        </div>
       </footer>
     </div>
   );

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Question, DeliveredTest, QuizAttemptResult, StudentLocalProfile } from './types';
 import { StudentNavbar } from './components/StudentNavbar';
 import { StudentView } from './components/StudentView';
@@ -9,6 +9,9 @@ import { StudentIdRegistrationModal } from './components/StudentIdRegistrationMo
 import { 
   fetchDeliveredTests, 
   fetchTestByCode, 
+  fetchTestFromServer,
+  fetchQuestionsFromServer,
+  subscribeDeliveredTests,
   onNewDeliveredTest 
 } from './services/testSyncService';
 import { getStudentProfile, isTestEligibleForStudent } from './services/studentRosterService';
@@ -20,6 +23,8 @@ export const App: React.FC = () => {
   const [deliveredTests, setDeliveredTests] = useState<DeliveredTest[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const knownTestIdsRef = useRef<Set<string>>(new Set());
+  const isInitialSyncDoneRef = useRef<boolean>(false);
 
   // Local quiz history
   const [quizHistory, setQuizHistory] = useState<QuizAttemptResult[]>(() => {
@@ -51,21 +56,37 @@ export const App: React.FC = () => {
 
   // Load questions and delivered tests
   const loadData = useCallback(async () => {
-    setIsLoading(true);
-    setLoadError(null);
     try {
-      // 1. Fetch questions from API
-      const qRes = await fetch('/api/questions');
-      if (qRes.ok) {
-        const qData = await qRes.json();
-        setQuestions(qData.questions || []);
-      } else {
-        console.warn('API /api/questions failed with status:', qRes.status);
+      // 1. Fetch questions from server API / Firestore
+      const loadedQs = await fetchQuestionsFromServer();
+      if (loadedQs.length > 0) {
+        setQuestions(prev => {
+          const map = new Map(prev.map(q => [q.id, q]));
+          loadedQs.forEach(q => map.set(q.id, q));
+          return Array.from(map.values());
+        });
       }
 
-      // 2. Fetch delivered tests
+      // 2. Fetch delivered tests from API & Firestore
       const tests = await fetchDeliveredTests();
       setDeliveredTests(tests);
+
+      // Detect newly arrived tests for notification
+      if (isInitialSyncDoneRef.current && tests.length > 0) {
+        for (const t of tests) {
+          if (!knownTestIdsRef.current.has(t.id)) {
+            knownTestIdsRef.current.add(t.id);
+            const profile = getStudentProfile();
+            if (isTestEligibleForStudent(t, profile).eligible) {
+              setNewlyReceivedTest(t);
+              break;
+            }
+          }
+        }
+      } else {
+        tests.forEach(t => knownTestIdsRef.current.add(t.id));
+        isInitialSyncDoneRef.current = true;
+      }
     } catch (err: any) {
       console.error('Error loading data:', err);
       setLoadError(err?.message || 'データの取得に失敗しました');
@@ -77,22 +98,76 @@ export const App: React.FC = () => {
   useEffect(() => {
     loadData();
 
-    // Listen for real-time / local storage broadcast of newly delivered tests
-    const unsubscribe = onNewDeliveredTest((test) => {
-      setDeliveredTests(prev => {
-        if (prev.some(t => t.id === test.id)) return prev;
-        return [test, ...prev];
-      });
+    // Fast 3.5s auto-polling to ensure instant sync even across Render / AI Studio
+    const pollInterval = setInterval(loadData, 3500);
 
-      // If test is eligible for this student, show the alert popup
-      const profile = getStudentProfile();
-      if (isTestEligibleForStudent(test, profile).eligible) {
-        setNewlyReceivedTest(test);
+    // Instant sync triggers on tab focus, visibility change, or online reconnect
+    const handleActiveSync = () => {
+      loadData();
+    };
+    window.addEventListener('focus', handleActiveSync);
+    window.addEventListener('online', handleActiveSync);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') handleActiveSync();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    // Real-time Firestore subscription
+    const unsubscribeCloud = subscribeDeliveredTests((tests) => {
+      setDeliveredTests(tests);
+      if (isInitialSyncDoneRef.current) {
+        for (const t of tests) {
+          if (!knownTestIdsRef.current.has(t.id)) {
+            knownTestIdsRef.current.add(t.id);
+            const profile = getStudentProfile();
+            if (isTestEligibleForStudent(t, profile).eligible) {
+              setNewlyReceivedTest(t);
+              break;
+            }
+          }
+        }
+      } else {
+        tests.forEach(t => knownTestIdsRef.current.add(t.id));
+        isInitialSyncDoneRef.current = true;
       }
     });
 
+    // Check for ?code=... or #code=... in URL on mount
+    const checkUrlCode = async () => {
+      try {
+        const search = window.location.search;
+        const hash = window.location.hash;
+        const params = new URLSearchParams(search);
+        let code = params.get('code');
+        if (!code && hash) {
+          const match = hash.match(/code=([^&]+)/);
+          if (match) code = match[1];
+        }
+        if (code) {
+          const res = await fetchTestFromServer(code);
+          if (res && res.questions.length > 0) {
+            setDeliveredTests(prev => {
+              const filtered = prev.filter(t => t.id !== res.test.id);
+              return [res.test, ...filtered];
+            });
+            setNewlyReceivedTest(res.test);
+            try {
+              window.history.replaceState(null, '', window.location.pathname);
+            } catch {}
+          }
+        }
+      } catch (e) {
+        console.warn('URL test code parse note:', e);
+      }
+    };
+    checkUrlCode();
+
     return () => {
-      unsubscribe();
+      clearInterval(pollInterval);
+      window.removeEventListener('focus', handleActiveSync);
+      window.removeEventListener('online', handleActiveSync);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      unsubscribeCloud();
     };
   }, [loadData]);
 
@@ -191,6 +266,7 @@ export const App: React.FC = () => {
         studentProfile={studentProfile}
         onOpenProfile={() => setShowProfileModal(true)}
         pendingTestsCount={deliveredTests.length}
+        onRefreshTests={loadData}
       />
 
       {/* Main Content Area */}
@@ -246,6 +322,7 @@ export const App: React.FC = () => {
             onStartQuiz={handleStartQuiz}
             onViewHistoryResult={handleViewHistoryResult}
             onJoinByCode={handleJoinByCode}
+            onRefreshTests={loadData}
           />
         )}
       </main>

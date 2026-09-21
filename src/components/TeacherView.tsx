@@ -9,6 +9,7 @@ import { TeacherAuthModal } from './TeacherAuthModal';
 import { StudentRosterManager } from './StudentRosterManager';
 import { GoogleDocsExportModal } from './GoogleDocsExportModal';
 import { WordExportModal } from './WordExportModal';
+import { StudentPortalGuideModal } from './StudentPortalGuideModal';
 import { fetchStudentRoster, subscribeStudentRoster } from '../services/studentRosterService';
 import { subscribeAllSubmissions } from '../services/testSyncService';
 import { SubmissionRecord } from '../types';
@@ -89,6 +90,7 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
   const [showComprehensiveModal, setShowComprehensiveModal] = useState(false);
   const [comprehensiveInitialStudentId, setComprehensiveInitialStudentId] = useState<string | undefined>(undefined);
   const [showPasscodeSettingsModal, setShowPasscodeSettingsModal] = useState(false);
+  const [showStudentGuideModal, setShowStudentGuideModal] = useState(false);
   const [googleDocsExportData, setGoogleDocsExportData] = useState<{ title: string; questions: Question[] } | null>(null);
   const [wordExportData, setWordExportData] = useState<{ title: string; questions: Question[] } | null>(null);
   const [isSyncingCloud, setIsSyncingCloud] = useState(false);
@@ -564,6 +566,14 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
 
         <div className="flex flex-wrap items-center gap-2.5">
           <button
+            onClick={() => setShowStudentGuideModal(true)}
+            className="px-3.5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all flex items-center shadow-xs cursor-pointer ring-2 ring-emerald-400/40"
+            title="学生のスマホやPCから直接アクセスできるQRコードと専用URLを表示"
+          >
+            <QrCode className="w-4 h-4 mr-1.5" />
+            <span>学生案内 (QR・URL)</span>
+          </button>
+          <button
             onClick={() => setShowPasscodeSettingsModal(true)}
             className="px-3.5 py-2.5 bg-indigo-800/80 hover:bg-indigo-800 text-indigo-100 hover:text-white border border-indigo-500/40 rounded-xl text-xs font-semibold transition-colors flex items-center shadow-xs"
             title="教員モード切替時の6桁パスコードの確認・変更"
@@ -574,9 +584,10 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
           <button
             onClick={onSwitchToStudentMode}
             className="px-4 py-2.5 bg-white text-indigo-900 rounded-xl text-xs sm:text-sm font-bold shadow-sm hover:bg-indigo-50 transition-colors flex items-center"
+            title="学生側画面の表示を確認する"
           >
             <Eye className="w-4 h-4 mr-1.5 text-indigo-700" />
-            学生画面へ戻る
+            学生側画面の確認
           </button>
         </div>
       </div>
@@ -599,17 +610,33 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
       )}
 
       {deliverySuccessMessage && (
-        <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-xl flex items-center justify-between shadow-sm animate-fade-in">
-          <div className="flex items-center space-x-2 text-emerald-900 text-sm font-semibold">
+        <div className="bg-emerald-50 border-2 border-emerald-300 p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm animate-fade-in">
+          <div className="flex items-center space-x-2.5 text-emerald-950 text-sm font-bold">
             <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
-            <span>{deliverySuccessMessage}</span>
+            <div>
+              <p>{deliverySuccessMessage}</p>
+              <p className="text-xs text-emerald-700 font-medium mt-0.5">
+                学生端末（スマホやPC）にリアルタイムで即時届きます。教室のスクリーンにQRコードを投影するか、案内コードをお伝えください。
+              </p>
+            </div>
           </div>
-          <button
-            onClick={onSwitchToStudentMode}
-            className="px-3 py-1 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 transition-colors shrink-0 ml-3"
-          >
-            学生モードで解答する →
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowStudentGuideModal(true)}
+              className="px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
+            >
+              <QrCode className="w-3.5 h-3.5" />
+              <span>学生案内QRを表示</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('manage-tests')}
+              className="px-3.5 py-1.5 bg-white border border-emerald-300 hover:bg-emerald-100 text-emerald-900 rounded-xl text-xs font-bold transition-colors shadow-2xs"
+            >
+              配信一覧で確認 →
+            </button>
+          </div>
         </div>
       )}
 
@@ -2271,6 +2298,15 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
           onClose={() => setWordExportData(null)}
           questions={wordExportData.questions}
           defaultTitle={wordExportData.title}
+        />
+      )}
+
+      {/* Student Portal Guide Modal (QR code & standalone access URL) */}
+      {showStudentGuideModal && (
+        <StudentPortalGuideModal
+          onClose={() => setShowStudentGuideModal(false)}
+          latestTestCode={deliveredTests.length > 0 ? (deliveredTests[0].code || deliveredTests[0].id) : undefined}
+          latestTestTitle={deliveredTests.length > 0 ? deliveredTests[0].title : undefined}
         />
       )}
     </div>

@@ -59,6 +59,7 @@ interface StudentViewProps {
   onSwitchToTeacherMode?: () => void;
   onJoinByCode?: (code: string) => Promise<boolean>;
   onRefreshTests?: () => Promise<void>;
+  isStudentStandalone?: boolean;
 }
 
 export const StudentView: React.FC<StudentViewProps> = ({
@@ -69,9 +70,14 @@ export const StudentView: React.FC<StudentViewProps> = ({
   onViewHistoryResult,
   onSwitchToTeacherMode,
   onJoinByCode,
-  onRefreshTests
+  onRefreshTests,
+  isStudentStandalone = false
 }) => {
-  const [activeTab, setActiveTab] = useState<'practice' | 'today-tests' | 'history'>('practice');
+  // If there are tests delivered by teacher, prioritize today's tests tab for the student
+  const [activeTab, setActiveTab] = useState<'practice' | 'today-tests' | 'history'>(() => {
+    if (deliveredTests.length > 0) return 'today-tests';
+    return 'practice';
+  });
   const [searchKeyword, setSearchKeyword] = useState('');
   const [inputTestCode, setInputTestCode] = useState('');
   const [isJoiningCode, setIsJoiningCode] = useState(false);
@@ -97,7 +103,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
   // Student device profile state
   const [studentProfile, setStudentProfile] = useState<StudentLocalProfile | null>(() => getStudentProfile());
   const [showRegistrationModal, setShowRegistrationModal] = useState(false);
-  const [filterMyGradeOnly, setFilterMyGradeOnly] = useState(true);
+  const [filterMyGradeOnly, setFilterMyGradeOnly] = useState(false);
   const [registrationToast, setRegistrationToast] = useState<string | null>(null);
 
   // Sync profile when updated in registration modal or local storage
@@ -469,54 +475,172 @@ export const StudentView: React.FC<StudentViewProps> = ({
         }}
       />
 
+      {/* 🌟 常設クイックツールバー: 「最新に更新 / 再確認」＆小テスト配信ステータス＆参加コード入力 */}
+      <div className="bg-white border-2 border-teal-100 rounded-2xl p-3.5 sm:p-4 shadow-xs flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-teal-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+            <Clock className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-black text-slate-800">教員配信テスト:</span>
+              {deliveredTests.length > 0 ? (
+                <span className="px-2.5 py-0.5 bg-amber-500 text-white rounded-full text-xs font-black animate-pulse shadow-2xs">
+                  {deliveredTests.length} 件 配信中
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-full text-xs font-semibold">
+                  現在 0 件
+                </span>
+              )}
+              {deliveredTests.length > 0 && activeTab !== 'today-tests' && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('today-tests')}
+                  className="text-xs font-bold text-teal-700 hover:text-teal-900 underline flex items-center cursor-pointer"
+                >
+                  「今日のテスト」で今すぐ受験
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              教員が小テストを配信した直後は、右側の「最新に更新 / 再確認」を押すと即時反映されます。
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 shrink-0">
+          {/* Direct Code Join Form in Toolbar */}
+          {onJoinByCode && (
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!inputTestCode.trim() || isJoiningCode) return;
+                setCodeError(null);
+                setIsJoiningCode(true);
+                try {
+                  const success = await onJoinByCode(inputTestCode.trim());
+                  if (success) {
+                    setInputTestCode('');
+                    setActiveTab('today-tests');
+                  } else {
+                    setCodeError('コードが見つかりません');
+                  }
+                } catch {
+                  setCodeError('取得失敗');
+                } finally {
+                  setIsJoiningCode(false);
+                }
+              }}
+              className="flex items-center gap-1.5"
+            >
+              <input
+                type="text"
+                placeholder="参加コード (例: K9X2P4)"
+                value={inputTestCode}
+                onChange={(e) => {
+                  setInputTestCode(e.target.value.toUpperCase());
+                  if (codeError) setCodeError(null);
+                }}
+                maxLength={10}
+                className="uppercase font-mono text-xs px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-teal-500 focus:outline-none w-full sm:w-36 text-center font-bold tracking-wider text-teal-950 placeholder:text-slate-400 placeholder:font-normal"
+              />
+              <button
+                type="submit"
+                disabled={!inputTestCode.trim() || isJoiningCode}
+                className="px-3 py-2 bg-teal-800 hover:bg-teal-900 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition-colors shrink-0 shadow-xs cursor-pointer"
+                title="先生から指定された6桁のコードを入力して直接小テストを開始"
+              >
+                {isJoiningCode ? '取得中...' : 'コードで参加'}
+              </button>
+            </form>
+          )}
+
+          <button
+            type="button"
+            onClick={handleManualRefresh}
+            disabled={isRefreshingTests}
+            className="w-full sm:w-auto px-4 py-2 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white font-black text-xs sm:text-sm rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+            title="最新の配信小テスト・過去問データをサーバーから即座に再取得"
+          >
+            <RefreshCw className={`w-4 h-4 text-white ${isRefreshingTests ? 'animate-spin' : ''}`} />
+            <span>{isRefreshingTests ? '確認中...' : '最新に更新 / 再確認'}</span>
+          </button>
+        </div>
+      </div>
+      {codeError && (
+        <div className="text-right -mt-2">
+          <span className="text-xs text-rose-600 font-bold bg-rose-50 px-3 py-1 rounded-lg border border-rose-200">
+            ⚠️ {codeError}
+          </span>
+        </div>
+      )}
+
       {/* Tabs */}
-      <div className="flex border-b border-slate-200 space-x-2 sm:space-x-4">
-        <button
-          onClick={() => setActiveTab('practice')}
-          className={`py-3 px-4 text-sm font-semibold border-b-2 flex items-center space-x-2 transition-colors ${
-            activeTab === 'practice'
-              ? 'border-teal-600 text-teal-700'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          <BookOpen className="w-4 h-4" />
-          <span>過去問検索・演習</span>
-        </button>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-200 gap-2">
+        <div className="flex space-x-2 sm:space-x-4 overflow-x-auto">
+          <button
+            onClick={() => setActiveTab('practice')}
+            className={`py-3 px-4 text-sm font-semibold border-b-2 flex items-center space-x-2 transition-colors shrink-0 ${
+              activeTab === 'practice'
+                ? 'border-teal-600 text-teal-700 font-bold'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            <BookOpen className="w-4 h-4" />
+            <span>過去問検索・演習</span>
+          </button>
 
-        <button
-          onClick={() => setActiveTab('today-tests')}
-          className={`py-3 px-4 text-sm font-semibold border-b-2 flex items-center space-x-2 transition-colors relative ${
-            activeTab === 'today-tests'
-              ? 'border-teal-600 text-teal-700'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          <Clock className="w-4 h-4" />
-          <span>今日のテスト</span>
-          {deliveredTests.length > 0 && (
-            <span className="bg-amber-500 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full flex items-center gap-1 shadow-xs animate-pulse">
-              <span>{deliveredTests.length}</span>
-              <span className="hidden sm:inline text-[9px]">配信中</span>
-            </span>
-          )}
-        </button>
+          <button
+            onClick={() => setActiveTab('today-tests')}
+            className={`py-3 px-4 text-sm font-semibold border-b-2 flex items-center space-x-2 transition-colors relative shrink-0 ${
+              activeTab === 'today-tests'
+                ? 'border-teal-600 text-teal-700 font-bold'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            <Clock className="w-4 h-4" />
+            <span>今日のテスト</span>
+            {deliveredTests.length > 0 && (
+              <span className="bg-amber-500 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full flex items-center gap-1 shadow-xs animate-pulse">
+                <span>{deliveredTests.length}</span>
+                <span className="hidden sm:inline text-[9px]">配信中</span>
+              </span>
+            )}
+          </button>
 
-        <button
-          onClick={() => setActiveTab('history')}
-          className={`py-3 px-4 text-sm font-semibold border-b-2 flex items-center space-x-2 transition-colors ${
-            activeTab === 'history'
-              ? 'border-teal-600 text-teal-700'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          <BarChart3 className="w-4 h-4" />
-          <span>学習履歴・成績</span>
-          {quizHistory.length > 0 && (
-            <span className="bg-slate-200 text-slate-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full">
-              {quizHistory.length}
-            </span>
-          )}
-        </button>
+          <button
+            onClick={() => setActiveTab('history')}
+            className={`py-3 px-4 text-sm font-semibold border-b-2 flex items-center space-x-2 transition-colors shrink-0 ${
+              activeTab === 'history'
+                ? 'border-teal-600 text-teal-700 font-bold'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            <BarChart3 className="w-4 h-4" />
+            <span>学習履歴・成績</span>
+            {quizHistory.length > 0 && (
+              <span className="bg-slate-200 text-slate-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+                {quizHistory.length}
+              </span>
+            )}
+          </button>
+        </div>
+
+        {/* Tab-level refresh button */}
+        <div className="hidden md:flex items-center pb-2 sm:pb-0">
+          <button
+            type="button"
+            onClick={handleManualRefresh}
+            disabled={isRefreshingTests}
+            className="px-3 py-1.5 text-xs font-bold text-teal-800 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
+            title="最新の配信テスト・過去問を再確認"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 text-teal-600 ${isRefreshingTests ? 'animate-spin' : ''}`} />
+            <span>{isRefreshingTests ? '確認中...' : '最新に更新 / 再確認'}</span>
+          </button>
+        </div>
       </div>
 
       {/* 🔔 配信中の小テストがある場合の通知バナー (過去問検索タブ上部に表示) */}
@@ -548,11 +672,11 @@ export const StudentView: React.FC<StudentViewProps> = ({
               type="button"
               onClick={handleManualRefresh}
               disabled={isRefreshingTests}
-              className="px-3 py-2.5 bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs rounded-xl border border-slate-200 shadow-2xs flex items-center gap-1.5 transition-colors cursor-pointer"
+              className="px-3 py-2.5 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 shadow-2xs flex items-center gap-1.5 transition-colors cursor-pointer"
               title="最新の配信情報を再確認"
             >
               <RefreshCw className={`w-3.5 h-3.5 text-teal-600 ${isRefreshingTests ? 'animate-spin' : ''}`} />
-              <span>{isRefreshingTests ? '確認中...' : '再確認'}</span>
+              <span>{isRefreshingTests ? '確認中...' : '最新に更新 / 再確認'}</span>
             </button>
             <button
               type="button"
@@ -1338,11 +1462,11 @@ export const StudentView: React.FC<StudentViewProps> = ({
                   type="button"
                   onClick={handleManualRefresh}
                   disabled={isRefreshingTests}
-                  className="p-1.5 rounded-lg text-slate-500 hover:text-teal-700 hover:bg-teal-50 border border-slate-200 transition-colors flex items-center gap-1 text-xs font-semibold"
+                  className="px-3 py-1.5 rounded-xl text-teal-800 bg-teal-50 hover:bg-teal-100 border border-teal-200 transition-colors flex items-center gap-1.5 text-xs font-bold shadow-2xs cursor-pointer"
                   title="最新の配信テストを受信"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 text-teal-600 ${isRefreshingTests ? 'animate-spin' : ''}`} />
-                  <span className="hidden sm:inline">{isRefreshingTests ? '受信中...' : '最新に更新'}</span>
+                  <span>{isRefreshingTests ? '受信中...' : '最新に更新 / 再確認'}</span>
                 </button>
               </div>
               <p className="text-xs sm:text-sm text-slate-500">学年や個人宛に配信された「今日のテスト」がここに表示されます。</p>
@@ -1481,10 +1605,10 @@ export const StudentView: React.FC<StudentViewProps> = ({
                   type="button"
                   onClick={handleManualRefresh}
                   disabled={isRefreshingTests}
-                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+                  className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
                 >
-                  <RefreshCw className={`w-3.5 h-3.5 text-slate-600 ${isRefreshingTests ? 'animate-spin' : ''}`} />
-                  <span>最新の小テストを受信</span>
+                  <RefreshCw className={`w-3.5 h-3.5 text-white ${isRefreshingTests ? 'animate-spin' : ''}`} />
+                  <span>{isRefreshingTests ? '受信確認中...' : '最新に更新 / 再確認'}</span>
                 </button>
               </div>
             </div>
