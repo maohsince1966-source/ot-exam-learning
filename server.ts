@@ -552,12 +552,13 @@ async function startServer() {
         if (s && s.studentId) {
           const cleanId = String(s.studentId).trim().toUpperCase();
           if (!cleanId) continue;
+          const existing = map.get(cleanId);
           map.set(cleanId, {
             studentId: cleanId,
-            grade: Number(s.grade) || 1,
-            name: (s.name || "").trim(),
-            notes: (s.notes || "").trim(),
-            registeredAt: s.registeredAt || new Date().toISOString()
+            grade: Number(s.grade) || existing?.grade || 1,
+            name: (s.name || "").trim() || (existing?.name || ""),
+            notes: (s.notes || "").trim() || (existing?.notes || "学生端末より自己登録"),
+            registeredAt: existing?.registeredAt || s.registeredAt || new Date().toISOString()
           });
         }
       }

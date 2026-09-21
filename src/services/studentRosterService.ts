@@ -82,13 +82,16 @@ export function getStudentLocalProfile(): StudentLocalProfile | null {
  */
 export function saveStudentLocalProfile(profile: StudentLocalProfile): void {
   try {
-    const cleanId = profile.studentId.trim().toUpperCase();
+    const cleanId = String(profile.studentId || '').normalize('NFKC').trim().toUpperCase();
     localStorage.setItem(LOCAL_STORAGE_KEY_STUDENT_ID, cleanId);
     localStorage.setItem(LOCAL_STORAGE_KEY_STUDENT_GRADE, String(profile.grade || 1));
     if (profile.name && profile.name.trim()) {
       localStorage.setItem(LOCAL_STORAGE_KEY_STUDENT_NAME, profile.name.trim());
     } else {
       localStorage.removeItem(LOCAL_STORAGE_KEY_STUDENT_NAME);
+    }
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('student_profile_updated', { detail: profile }));
     }
   } catch (e) {
     console.error('Failed to save student profile locally:', e);
@@ -226,18 +229,29 @@ export async function saveStudentsToRoster(
   const updatedList = Array.from(studentMap.values());
   saveLocalStoredRoster(updatedList);
 
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('student_roster_updated', { detail: updatedList }));
+  }
+
   // 2. Sync to Server API (with timeout so UI never hangs)
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 4000);
-    await fetch('/api/students/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ students: updatedList }),
-      signal: controller.signal
-    }).catch(err => {
-      console.warn('Server sync fetch notice:', err?.message);
-    }).finally(() => {
+    // Send both batch and direct updates to guarantee persistence across endpoints
+    await Promise.allSettled([
+      fetch('/api/students/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ students: updatedList }),
+        signal: controller.signal
+      }),
+      fetch('/api/students', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(validItems),
+        signal: controller.signal
+      })
+    ]).finally(() => {
       clearTimeout(timeoutId);
     });
   } catch (err: any) {
@@ -398,8 +412,46 @@ export function subscribeStudentRoster(
     }
   }
 
+  // Real-time periodic synchronization from server (every 3 seconds)
+  // Ensures students registering from external devices/smartphones reflect on teacher screen
+  const pollInterval = setInterval(() => {
+    if (isCancelled) return;
+    fetchStudentRoster().then(list => {
+      if (isCancelled) return;
+      let hasChanges = false;
+      list.forEach(s => {
+        const key = s.studentId.toUpperCase();
+        const existing = studentMap.get(key);
+        if (!existing || existing.grade !== s.grade || existing.name !== s.name || existing.notes !== s.notes) {
+          studentMap.set(key, s);
+          hasChanges = true;
+        }
+      });
+      if (hasChanges) {
+        notify();
+      }
+    }).catch(() => {});
+  }, 3000);
+
+  // Cross-tab and local dispatch listener
+  const handleRosterEvent = () => {
+    if (isCancelled) return;
+    const local = getLocalStoredRoster();
+    local.forEach(s => studentMap.set(s.studentId.toUpperCase(), s));
+    notify();
+  };
+  if (typeof window !== 'undefined') {
+    window.addEventListener('student_roster_updated', handleRosterEvent);
+    window.addEventListener('storage', handleRosterEvent);
+  }
+
   return () => {
     isCancelled = true;
+    clearInterval(pollInterval);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('student_roster_updated', handleRosterEvent);
+      window.removeEventListener('storage', handleRosterEvent);
+    }
     unsubscribeFirestore();
   };
 }

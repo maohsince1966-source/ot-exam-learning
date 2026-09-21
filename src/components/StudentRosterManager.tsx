@@ -24,11 +24,13 @@ import {
   Loader2,
   ShieldCheck,
   FileSpreadsheet,
-  Info
+  Info,
+  Sparkles
 } from 'lucide-react';
 
 export interface StudentRosterManagerProps {
   onRosterUpdated?: () => void;
+  onOpenStudentGuidance?: (studentId: string) => void;
 }
 
 interface ParsedStudentPreview {
@@ -176,7 +178,7 @@ export function parseStudentRosterText(rawText: string, targetGrade: number): Pa
   return result;
 }
 
-export const StudentRosterManager: React.FC<StudentRosterManagerProps> = ({ onRosterUpdated }) => {
+export const StudentRosterManager: React.FC<StudentRosterManagerProps> = ({ onRosterUpdated, onOpenStudentGuidance }) => {
   const [students, setStudents] = useState<StudentRosterItem[]>([]);
   const [selectedGrade, setSelectedGrade] = useState<number>(1); // Default to 1st grade
   const [loading, setLoading] = useState(true);
@@ -776,7 +778,18 @@ export const StudentRosterManager: React.FC<StudentRosterManagerProps> = ({ onRo
                       <td className="py-2.5 px-3 text-slate-500 text-[11px]">
                         {student.notes || <span className="text-slate-300">-</span>}
                       </td>
-                      <td className="py-2.5 px-3 text-right">
+                      <td className="py-2.5 px-3 text-right whitespace-nowrap">
+                        {onOpenStudentGuidance && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenStudentGuidance(student.studentId)}
+                            className="p-1.5 text-amber-600 hover:text-amber-700 rounded-lg hover:bg-amber-50 transition-colors mr-1 inline-flex items-center gap-1 text-xs font-bold"
+                            title="この学生の通算全テスト総合苦手分析・指導資料を開く"
+                          >
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span className="hidden md:inline">総合指導資料</span>
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => handleRequestDelete(student)}

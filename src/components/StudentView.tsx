@@ -81,6 +81,25 @@ export const StudentView: React.FC<StudentViewProps> = ({
   const [filterMyGradeOnly, setFilterMyGradeOnly] = useState(true);
   const [registrationToast, setRegistrationToast] = useState<string | null>(null);
 
+  // Sync profile when updated in registration modal or local storage
+  useEffect(() => {
+    const handleProfileSync = (e?: Event) => {
+      const customEvent = e as CustomEvent<StudentLocalProfile> | undefined;
+      if (customEvent?.detail?.studentId) {
+        setStudentProfile(customEvent.detail);
+      } else {
+        const fresh = getStudentProfile();
+        setStudentProfile(fresh);
+      }
+    };
+    window.addEventListener('student_profile_updated', handleProfileSync as EventListener);
+    window.addEventListener('storage', handleProfileSync);
+    return () => {
+      window.removeEventListener('student_profile_updated', handleProfileSync as EventListener);
+      window.removeEventListener('storage', handleProfileSync);
+    };
+  }, []);
+
   // Eligible delivered tests filtered by student's grade / ID
   const eligibleDeliveredTests = useMemo(() => {
     if (!filterMyGradeOnly || !studentProfile) return deliveredTests;

@@ -44,7 +44,7 @@ export const StudentIdRegistrationModal: React.FC<StudentIdRegistrationModalProp
       e.preventDefault();
       e.stopPropagation();
     }
-    const cleanId = studentId.trim().toUpperCase();
+    const cleanId = String(studentId || '').normalize('NFKC').trim().toUpperCase();
     if (!cleanId) {
       setError('学籍番号を入力してください（必須）');
       return;
@@ -59,26 +59,39 @@ export const StudentIdRegistrationModal: React.FC<StudentIdRegistrationModalProp
       name: name.trim() || undefined
     };
 
-    // 1. Immediately persist to localStorage for instant student mode usage
-    saveStudentLocalProfile(profile);
+    try {
+      // 1. Immediately persist to localStorage for instant student mode usage
+      saveStudentLocalProfile(profile);
 
-    // 2. Synchronize to teacher roster (Server API + Cloud Firestore) in background
-    saveStudentsToRoster({
-      studentId: cleanId,
-      grade,
-      name: name.trim() || undefined,
-      notes: '学生端末より自己登録',
-      registeredAt: new Date().toISOString()
-    }).catch(err => {
-      console.warn('Roster background sync notice:', err);
-    });
+      // Dispatch window event for instant same-page reactivity
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('student_profile_updated', { detail: profile }));
+        window.dispatchEvent(new CustomEvent('student_roster_updated'));
+      }
 
-    // 3. Notify parent callback
-    const callback = onSaved || onSave;
-    if (typeof callback === 'function') {
-      callback(profile);
-    } else {
-      onClose();
+      // 2. Synchronize to teacher roster (Server API + Cloud Firestore) in background
+      saveStudentsToRoster({
+        studentId: cleanId,
+        grade,
+        name: name.trim() || undefined,
+        notes: '学生端末より自己登録',
+        registeredAt: new Date().toISOString()
+      }).catch(err => {
+        console.warn('Roster background sync notice:', err);
+      });
+
+      // 3. Notify parent callback immediately
+      const callback = onSaved || onSave;
+      if (typeof callback === 'function') {
+        callback(profile);
+      } else {
+        onClose();
+      }
+    } catch (err: any) {
+      console.error('Failed during student ID save:', err);
+      setError('学籍番号の保存に失敗しました。もう一度お試しください。');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -190,10 +203,9 @@ export const StudentIdRegistrationModal: React.FC<StudentIdRegistrationModalProp
 
           <div className="pt-2">
             <button
-              type="button"
+              type="submit"
               id="save-student-profile-btn"
               disabled={isSubmitting}
-              onClick={handleSave}
               className="w-full py-3 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 disabled:opacity-75 text-white font-bold text-sm rounded-xl shadow-sm transition-all flex items-center justify-center space-x-2 cursor-pointer"
             >
               {isSubmitting ? (

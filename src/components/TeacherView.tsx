@@ -829,15 +829,37 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
                 {targetType === 'individual' && (
                   <div className="p-3 bg-indigo-50/70 border border-indigo-100 rounded-xl space-y-2 animate-fade-in">
                     <div className="flex items-center justify-between text-[11px] font-bold text-indigo-900">
-                      <span>対象学生（学籍番号）:</span>
+                      <div className="flex items-center gap-1.5">
+                        <span>対象学生（学籍番号）:</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            fetchStudentRoster().then(list => setRosterStudents(list)).catch(() => {});
+                          }}
+                          className="text-indigo-600 hover:text-indigo-800 p-0.5 rounded hover:bg-indigo-100 transition-colors"
+                          title="最新の名簿を再取得"
+                        >
+                          <RefreshCw className="w-3 h-3" />
+                        </button>
+                      </div>
                       <span className="bg-white px-2 py-0.5 rounded border border-indigo-200 text-indigo-700">
                         {targetStudentIds.length}名 選択中
                       </span>
                     </div>
 
                     {rosterStudents.length === 0 ? (
-                      <div className="text-[11px] text-slate-500 bg-white p-2.5 rounded-lg border border-slate-200">
-                        名簿に学生が登録されていません。「学生名簿・学年管理」タブで学籍番号を登録してください。
+                      <div className="text-[11px] text-slate-500 bg-white p-2.5 rounded-lg border border-slate-200 flex flex-col gap-1.5">
+                        <p>名簿に学生が登録されていません。「学生名簿・学年管理」タブで登録するか、学生端末での自己登録をお待ちください。</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            fetchStudentRoster().then(list => setRosterStudents(list)).catch(() => {});
+                          }}
+                          className="self-start text-[11px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
+                        >
+                          <RefreshCw className="w-3 h-3" />
+                          <span>名簿を今すぐ再確認・同期</span>
+                        </button>
                       </div>
                     ) : (
                       <div className="max-h-40 overflow-y-auto space-y-1 bg-white p-2 rounded-lg border border-slate-200 text-xs divide-y divide-slate-100">
@@ -1841,6 +1863,10 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
           onRosterUpdated={() => {
             fetchStudentRoster().then(list => setRosterStudents(list)).catch(() => {});
           }} 
+          onOpenStudentGuidance={(studentId) => {
+            setComprehensiveInitialStudentId(studentId);
+            setShowComprehensiveModal(true);
+          }}
         />
       )}
 
