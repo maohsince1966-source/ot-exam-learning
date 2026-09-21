@@ -519,15 +519,14 @@ async function startServer() {
   app.delete("/api/students/:studentId", (req, res) => {
     try {
       const { studentId } = req.params;
-      const cleanId = studentId.trim().toUpperCase();
+      const cleanId = String(studentId || "").trim().toUpperCase();
       const initialLen = storedStudents.length;
-      storedStudents = storedStudents.filter(s => s.studentId !== cleanId);
+      storedStudents = storedStudents.filter(s => String(s.studentId || "").trim().toUpperCase() !== cleanId);
 
       if (storedStudents.length !== initialLen) {
         saveStudentsToDisk();
-        return res.json({ success: true });
       }
-      return res.status(404).json({ error: "Student not found" });
+      return res.json({ success: true, deleted: storedStudents.length !== initialLen });
     } catch (err: any) {
       console.error("Error deleting student:", err);
       return res.status(500).json({ error: err.message || "Failed to delete student" });

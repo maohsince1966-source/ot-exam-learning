@@ -363,37 +363,44 @@ export const StudentRosterManager: React.FC<StudentRosterManagerProps> = ({ onRo
 
   const handleExecuteDelete = async () => {
     if (!studentToDelete) return;
-    setIsDeleting(true);
+    const target = studentToDelete;
+    const cleanId = target.studentId.trim().toUpperCase();
+
+    // 1. Immediately close modal and reset deleting state so screen NEVER hangs on "削除中"
+    setStudentToDelete(null);
+    setIsDeleting(false);
+
+    // 2. Optimistic instant UI update: remove student from view immediately
+    setStudents(prev => prev.filter(s => s.studentId.trim().toUpperCase() !== cleanId));
+    setFeedback({
+      isError: false,
+      message: `学籍番号 ${cleanId}（${target.name || '受講生'}）を名簿から削除しました`
+    });
+
+    // 3. Perform durable background deletion (localStorage + server API + Firestore)
     try {
-      const studentId = studentToDelete.studentId;
-      const ok = await deleteStudentFromRoster(studentId);
-      if (ok) {
-        setFeedback({ isError: false, message: `学籍番号 ${studentId} を名簿から削除しました` });
-        setStudentToDelete(null);
-        await loadRoster();
-        onRosterUpdated?.();
-      } else {
-        setFeedback({ isError: true, message: '名簿からの削除に失敗しました' });
-      }
+      await deleteStudentFromRoster(cleanId);
+      onRosterUpdated?.();
     } catch (err: any) {
-      setFeedback({ isError: true, message: err?.message || '削除中にエラーが発生しました' });
-    } finally {
-      setIsDeleting(false);
+      console.warn('Student deletion notice:', err);
     }
   };
 
   const handleExecuteClearAll = async () => {
-    setIsDeleting(true);
+    // 1. Immediately close modal
+    setShowClearAllModal(false);
+    setIsDeleting(false);
+
+    // 2. Optimistic instant UI update
+    setStudents([]);
+    setFeedback({ isError: false, message: '全学年の学生名簿をクリアしました' });
+
+    // 3. Perform durable background clearing
     try {
       await clearAllStudentsRoster();
-      setFeedback({ isError: false, message: '全学年の学生名簿をクリアしました' });
-      setShowClearAllModal(false);
-      await loadRoster();
       onRosterUpdated?.();
     } catch (err: any) {
-      setFeedback({ isError: true, message: err?.message || 'クリア中にエラーが発生しました' });
-    } finally {
-      setIsDeleting(false);
+      console.warn('Clear all students notice:', err);
     }
   };
 
@@ -823,12 +830,22 @@ export const StudentRosterManager: React.FC<StudentRosterManagerProps> = ({ onRo
 
       {/* Delete Single Student Confirmation Modal */}
       {studentToDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setStudentToDelete(null);
+              setIsDeleting(false);
+            }
+          }}
+        >
           <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-100 relative animate-in zoom-in-95 duration-150">
             <button
               type="button"
-              disabled={isDeleting}
-              onClick={() => setStudentToDelete(null)}
+              onClick={() => {
+                setStudentToDelete(null);
+                setIsDeleting(false);
+              }}
               className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100 transition-colors"
             >
               <X className="w-4 h-4" />
@@ -867,29 +884,21 @@ export const StudentRosterManager: React.FC<StudentRosterManagerProps> = ({ onRo
             <div className="grid grid-cols-2 gap-2.5">
               <button
                 type="button"
-                disabled={isDeleting}
-                onClick={() => setStudentToDelete(null)}
+                onClick={() => {
+                  setStudentToDelete(null);
+                  setIsDeleting(false);
+                }}
                 className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition-colors"
               >
                 キャンセル
               </button>
               <button
                 type="button"
-                disabled={isDeleting}
                 onClick={handleExecuteDelete}
-                className="py-2.5 px-4 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs shadow-xs transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
+                className="py-2.5 px-4 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs shadow-xs transition-colors flex items-center justify-center gap-1.5"
               >
-                {isDeleting ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>削除中...</span>
-                  </>
-                ) : (
-                  <>
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>削除する</span>
-                  </>
-                )}
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>削除する</span>
               </button>
             </div>
           </div>
@@ -898,7 +907,15 @@ export const StudentRosterManager: React.FC<StudentRosterManagerProps> = ({ onRo
 
       {/* Clear All Modal */}
       {showClearAllModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowClearAllModal(false);
+              setIsDeleting(false);
+            }
+          }}
+        >
           <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-100 relative animate-in zoom-in-95 duration-150">
             <div className="w-12 h-12 rounded-2xl bg-rose-50 border border-rose-100 flex items-center justify-center text-rose-600 mx-auto mb-3.5 shadow-2xs">
               <Trash2 className="w-6 h-6" />
@@ -912,26 +929,20 @@ export const StudentRosterManager: React.FC<StudentRosterManagerProps> = ({ onRo
             <div className="grid grid-cols-2 gap-2.5">
               <button
                 type="button"
-                disabled={isDeleting}
-                onClick={() => setShowClearAllModal(false)}
+                onClick={() => {
+                  setShowClearAllModal(false);
+                  setIsDeleting(false);
+                }}
                 className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition-colors"
               >
                 キャンセル
               </button>
               <button
                 type="button"
-                disabled={isDeleting}
                 onClick={handleExecuteClearAll}
-                className="py-2.5 px-4 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs shadow-xs transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
+                className="py-2.5 px-4 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs shadow-xs transition-colors flex items-center justify-center gap-1.5"
               >
-                {isDeleting ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>消去中...</span>
-                  </>
-                ) : (
-                  <span>全消去する</span>
-                )}
+                <span>全消去する</span>
               </button>
             </div>
           </div>

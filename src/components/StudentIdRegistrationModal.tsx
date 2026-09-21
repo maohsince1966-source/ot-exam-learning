@@ -1,6 +1,11 @@
 import React, { useState } from 'react';
 import { StudentLocalProfile } from '../types';
-import { saveStudentLocalProfile, saveStudentsToRoster } from '../services/studentRosterService';
+import { 
+  saveStudentLocalProfile, 
+  saveStudentsToRoster, 
+  deleteStudentFromRoster, 
+  getStudentProfile 
+} from '../services/studentRosterService';
 import { GraduationCap, X, Check, Info, Loader2 } from 'lucide-react';
 
 interface StudentIdRegistrationModalProps {
@@ -20,18 +25,21 @@ export const StudentIdRegistrationModal: React.FC<StudentIdRegistrationModalProp
   onSave,
   isRequired = false
 }) => {
-  const [studentId, setStudentId] = useState(initialProfile?.studentId || '');
-  const [grade, setGrade] = useState<number>(initialProfile?.grade || 3);
-  const [name, setName] = useState(initialProfile?.name || '');
+  const currentSaved = getStudentProfile();
+  const baseProfile = initialProfile || currentSaved;
+  const [studentId, setStudentId] = useState(baseProfile?.studentId || '');
+  const [grade, setGrade] = useState<number>(baseProfile?.grade || 1);
+  const [name, setName] = useState(baseProfile?.name || '');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Sync state when initialProfile changes or modal opens
   React.useEffect(() => {
     if (isOpen) {
-      setStudentId(initialProfile?.studentId || '');
-      setGrade(initialProfile?.grade || 3);
-      setName(initialProfile?.name || '');
+      const p = initialProfile || getStudentProfile();
+      setStudentId(p?.studentId || '');
+      setGrade(p?.grade || 1);
+      setName(p?.name || '');
       setError(null);
       setIsSubmitting(false);
     }
@@ -60,7 +68,15 @@ export const StudentIdRegistrationModal: React.FC<StudentIdRegistrationModalProp
     };
 
     try {
-      // 1. Immediately persist to localStorage for instant student mode usage
+      // 1. If student ID changed from a previous ID on this device, delete the old ID from the roster
+      const oldId = (initialProfile?.studentId || getStudentProfile()?.studentId || '').trim().toUpperCase();
+      if (oldId && oldId !== cleanId) {
+        deleteStudentFromRoster(oldId).catch(err => {
+          console.warn('Failed to delete old student roster entry:', err);
+        });
+      }
+
+      // 2. Immediately persist to localStorage for instant student mode usage
       saveStudentLocalProfile(profile);
 
       // Dispatch window event for instant same-page reactivity
@@ -69,18 +85,18 @@ export const StudentIdRegistrationModal: React.FC<StudentIdRegistrationModalProp
         window.dispatchEvent(new CustomEvent('student_roster_updated'));
       }
 
-      // 2. Synchronize to teacher roster (Server API + Cloud Firestore) in background
-      saveStudentsToRoster({
+      // 3. Synchronize to teacher roster (Server API + Cloud Firestore)
+      await saveStudentsToRoster({
         studentId: cleanId,
         grade,
         name: name.trim() || undefined,
         notes: '学生端末より自己登録',
         registeredAt: new Date().toISOString()
       }).catch(err => {
-        console.warn('Roster background sync notice:', err);
+        console.warn('Roster sync notice:', err);
       });
 
-      // 3. Notify parent callback immediately
+      // 4. Notify parent callback immediately
       const callback = onSaved || onSave;
       if (typeof callback === 'function') {
         callback(profile);

@@ -131,7 +131,10 @@ export async function fetchStudentRoster(grade?: number): Promise<StudentRosterI
   // 2. Fetch from Server API - ALWAYS fetch ALL grades to avoid overwriting localStorage with a single grade!
   let serverReturnedEmpty = false;
   try {
-    const res = await fetch('/api/students');
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
+    const res = await fetch('/api/students', { signal: controller.signal });
+    clearTimeout(timeoutId);
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data.students)) {
@@ -155,18 +158,26 @@ export async function fetchStudentRoster(grade?: number): Promise<StudentRosterI
   // automatically re-hydrate the server so both remain in sync!
   if (serverReturnedEmpty && studentMap.size > 0) {
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
       fetch('/api/students/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ students: Array.from(studentMap.values()) })
+        body: JSON.stringify({ students: Array.from(studentMap.values()) }),
+        signal: controller.signal
       }).catch(() => {});
+      clearTimeout(timeoutId);
     } catch {}
   }
 
-  // 4. Fetch from Cloud Firestore if available
+  // 4. Fetch from Cloud Firestore if available (with strict 1500ms safety timeout)
   if (isFirebaseConfigured && db) {
     try {
-      const snap = await getDocs(collection(db, STUDENTS_COLLECTION));
+      const firestorePromise = getDocs(collection(db, STUDENTS_COLLECTION));
+      const snap = await Promise.race([
+        firestorePromise,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Firestore timeout')), 1500))
+      ]);
       snap.forEach(docSnap => {
         const item = docSnap.data() as StudentRosterItem;
         if (item && item.studentId && !isDummySampleStudent(item)) {
@@ -294,26 +305,39 @@ export async function saveStudentsToRoster(
 export async function deleteStudentFromRoster(studentId: string): Promise<boolean> {
   const cleanId = studentId.trim().toUpperCase();
 
-  // 1. Immediately remove from localStorage
+  // 1. Immediately remove from localStorage (synchronous & guaranteed)
   const currentLocal = getLocalStoredRoster();
   const filtered = currentLocal.filter(s => s.studentId.toUpperCase() !== cleanId);
   saveLocalStoredRoster(filtered);
 
-  // 2. Delete from Server API
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('student_roster_updated'));
+  }
+
+  // 2. Delete from Server API with strict 2.5s timeout
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
     await fetch(`/api/students/${encodeURIComponent(cleanId)}`, {
-      method: 'DELETE'
+      method: 'DELETE',
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
   } catch (err) {
     console.warn('Server API student deletion error:', err);
   }
 
-  // 3. Delete from Cloud Firestore
+  // 3. Delete from Cloud Firestore in background (NON-BLOCKING with 1.5s timeout)
   if (isFirebaseConfigured && db) {
     try {
-      await deleteDoc(doc(db, STUDENTS_COLLECTION, cleanId));
+      Promise.race([
+        deleteDoc(doc(db, STUDENTS_COLLECTION, cleanId)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Firestore timeout')), 1500))
+      ]).catch(err => {
+        console.warn('Firestore student deletion notice:', err);
+      });
     } catch (err) {
-      console.warn('Firestore student deletion notice:', err);
+      console.warn('Firestore student deletion dispatch notice:', err);
     }
   }
 
@@ -325,8 +349,14 @@ export async function deleteStudentFromRoster(studentId: string): Promise<boolea
  */
 export async function clearAllStudentsRoster(): Promise<boolean> {
   saveLocalStoredRoster([]);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('student_roster_updated'));
+  }
   try {
-    await fetch('/api/students', { method: 'DELETE' });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
+    await fetch('/api/students', { method: 'DELETE', signal: controller.signal });
+    clearTimeout(timeoutId);
   } catch {}
   return true;
 }
@@ -341,6 +371,9 @@ export async function loadSampleRoster(): Promise<StudentRosterItem[]> {
       const data = await res.json();
       if (Array.isArray(data.students)) {
         saveLocalStoredRoster(data.students);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('student_roster_updated'));
+        }
         return data.students;
       }
     }
@@ -374,7 +407,10 @@ export function subscribeStudentRoster(
   // Network fetch & sync
   fetchStudentRoster().then(list => {
     if (isCancelled) return;
-    list.forEach(s => studentMap.set(s.studentId.toUpperCase(), s));
+    studentMap.clear();
+    // Re-populate from server list (or local fallback)
+    const combined = list.length > 0 ? list : getLocalStoredRoster();
+    combined.forEach(s => studentMap.set(s.studentId.toUpperCase(), s));
     notify();
   }).catch(() => {});
 
@@ -419,6 +455,17 @@ export function subscribeStudentRoster(
     fetchStudentRoster().then(list => {
       if (isCancelled) return;
       let hasChanges = false;
+      const serverKeys = new Set(list.map(s => s.studentId.toUpperCase()));
+
+      // Remove deleted students
+      for (const key of studentMap.keys()) {
+        if (!serverKeys.has(key)) {
+          studentMap.delete(key);
+          hasChanges = true;
+        }
+      }
+
+      // Add or update students
       list.forEach(s => {
         const key = s.studentId.toUpperCase();
         const existing = studentMap.get(key);
@@ -437,6 +484,7 @@ export function subscribeStudentRoster(
   const handleRosterEvent = () => {
     if (isCancelled) return;
     const local = getLocalStoredRoster();
+    studentMap.clear();
     local.forEach(s => studentMap.set(s.studentId.toUpperCase(), s));
     notify();
   };

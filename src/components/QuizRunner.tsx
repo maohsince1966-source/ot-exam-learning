@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Question, QuizAttemptResult } from '../types';
+import React, { useState, useEffect } from 'react';
+import { Question, QuizAttemptResult, StudentLocalProfile } from '../types';
 import { 
   CheckCircle, 
   CheckCircle2,
@@ -18,7 +18,8 @@ import {
   X,
   User,
   Send,
-  Loader2
+  Loader2,
+  GraduationCap
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { 
@@ -29,7 +30,12 @@ import {
 } from '../utils/categoryHelper';
 import { QuestionImage } from './QuestionImage';
 import { submitTestResultToCloud } from '../services/testSyncService';
-import { getStudentProfile, saveStudentProfile } from '../services/studentRosterService';
+import { 
+  getStudentProfile, 
+  saveStudentProfile, 
+  saveStudentsToRoster, 
+  deleteStudentFromRoster 
+} from '../services/studentRosterService';
 import { recordSingleQuestionAttempt, recordQuizAttempt } from '../services/studentStudyHistoryService';
 
 interface QuizRunnerProps {
@@ -86,6 +92,31 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
       return '';
     }
   });
+  const [studentGrade, setStudentGrade] = useState<number>(() => {
+    const p = getStudentProfile();
+    return p?.grade || 1;
+  });
+
+  // Keep QuizRunner student identity dynamically in sync with the global student profile
+  useEffect(() => {
+    const handleProfileSync = (e?: Event) => {
+      const customEvent = e as CustomEvent<StudentLocalProfile> | undefined;
+      const profile = customEvent?.detail || getStudentProfile();
+      if (profile) {
+        if (profile.studentId) setStudentId(profile.studentId);
+        if (profile.name !== undefined) setStudentName(profile.name || '');
+        if (profile.grade) setStudentGrade(profile.grade);
+      }
+    };
+
+    window.addEventListener('student_profile_updated', handleProfileSync as EventListener);
+    window.addEventListener('storage', handleProfileSync);
+    return () => {
+      window.removeEventListener('student_profile_updated', handleProfileSync as EventListener);
+      window.removeEventListener('storage', handleProfileSync);
+    };
+  }, []);
+
   const [submissionStatus, setSubmissionStatus] = useState<'idle' | 'submitting' | 'submitted' | 'error'>(
     initialSubmissionStatus !== 'idle' ? initialSubmissionStatus : (testId && initialSubmitted ? 'submitted' : 'idle')
   );
@@ -173,20 +204,26 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
   const executeGrading = () => {
     setShowIncompleteConfirmModal(false);
 
-    // Persist student identity locally
-    if (studentName.trim()) {
-      try {
-        localStorage.setItem('ot_student_name', studentName.trim());
-      } catch {
-        // ignore
-      }
-    }
-    if (studentId.trim()) {
-      try {
-        localStorage.setItem('ot_student_id', studentId.trim());
-      } catch {
-        // ignore
-      }
+    // Read freshest profile to prevent stale closures
+    const freshProfile = getStudentProfile();
+    const effectiveStudentId = (studentId.trim() || freshProfile?.studentId || '').toUpperCase();
+    const effectiveStudentName = studentName.trim() || freshProfile?.name || '受講生';
+    const effectiveGrade = studentGrade || freshProfile?.grade || 1;
+
+    // Persist and synchronize student identity locally & to teacher roster
+    if (effectiveStudentId) {
+      saveStudentProfile({
+        studentId: effectiveStudentId,
+        grade: effectiveGrade,
+        name: effectiveStudentName !== '受講生' ? effectiveStudentName : undefined
+      });
+      saveStudentsToRoster({
+        studentId: effectiveStudentId,
+        grade: effectiveGrade,
+        name: effectiveStudentName !== '受講生' ? effectiveStudentName : undefined,
+        notes: '小テスト受験提出',
+        registeredAt: new Date().toISOString()
+      }).catch(() => {});
     }
 
     let correctCount = 0;
@@ -237,8 +274,8 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
       const submitPromise = submitTestResultToCloud({
         testId,
         testTitle: title,
-        studentName: studentName.trim() || '受講生',
-        studentId: studentId.trim(),
+        studentName: effectiveStudentName,
+        studentId: effectiveStudentId,
         score: correctCount,
         total: questions.length,
         scorePercent,
@@ -291,6 +328,26 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
     setSubmissionStatus('submitting');
     setSubmissionError(null);
 
+    const freshProfile = getStudentProfile();
+    const effectiveStudentId = (studentId.trim() || freshProfile?.studentId || '').toUpperCase();
+    const effectiveStudentName = studentName.trim() || freshProfile?.name || '受講生';
+    const effectiveGrade = studentGrade || freshProfile?.grade || 1;
+
+    if (effectiveStudentId) {
+      saveStudentProfile({
+        studentId: effectiveStudentId,
+        grade: effectiveGrade,
+        name: effectiveStudentName !== '受講生' ? effectiveStudentName : undefined
+      });
+      saveStudentsToRoster({
+        studentId: effectiveStudentId,
+        grade: effectiveGrade,
+        name: effectiveStudentName !== '受講生' ? effectiveStudentName : undefined,
+        notes: '小テスト再提出',
+        registeredAt: new Date().toISOString()
+      }).catch(() => {});
+    }
+
     let correctCount = 0;
     const categoryStats: Record<string, { total: number; correct: number }> = {};
     questions.forEach(q => {
@@ -307,8 +364,8 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
     const submitPromise = submitTestResultToCloud({
       testId,
       testTitle: title,
-      studentName: studentName.trim() || '受講生',
-      studentId: studentId.trim(),
+      studentName: effectiveStudentName,
+      studentId: effectiveStudentId,
       score: correctCount,
       total: questions.length,
       scorePercent,
@@ -1030,9 +1087,46 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
                     <User className="w-3.5 h-3.5 text-teal-700" />
                     受験者情報（教員への提出・成績連携用）
                   </div>
-                  <span className="text-[10px] text-teal-700">自動でクラウド集計されます</span>
+                  <span className="text-[10px] text-teal-700">自動で教員側名簿とクラウド集計に連携されます</span>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+                  <div>
+                    <label className="text-[11px] font-bold text-slate-800 block mb-1">
+                      学年 <span className="text-rose-500 font-bold">*</span>
+                    </label>
+                    <select
+                      value={studentGrade}
+                      onChange={(e) => {
+                        const newGrade = Number(e.target.value);
+                        setStudentGrade(newGrade);
+                        const cleanId = studentId.normalize('NFKC').trim().toUpperCase();
+                        const p: StudentLocalProfile = {
+                          studentId: cleanId,
+                          grade: newGrade,
+                          name: studentName.trim() || undefined
+                        };
+                        saveStudentProfile(p);
+                        if (typeof window !== 'undefined') {
+                          window.dispatchEvent(new CustomEvent('student_profile_updated', { detail: p }));
+                        }
+                        if (cleanId) {
+                          saveStudentsToRoster({
+                            studentId: cleanId,
+                            grade: newGrade,
+                            name: studentName.trim() || undefined,
+                            notes: '受験画面より登録',
+                            registeredAt: new Date().toISOString()
+                          }).catch(() => {});
+                        }
+                      }}
+                      className="w-full px-3 py-2 bg-white border border-slate-300 font-bold text-slate-800 focus:border-teal-500 focus:ring-1 focus:ring-teal-500 rounded-lg text-xs"
+                    >
+                      <option value={1}>1年生</option>
+                      <option value={2}>2年生</option>
+                      <option value={3}>3年生</option>
+                      <option value={4}>4年生</option>
+                    </select>
+                  </div>
                   <div>
                     <label className="text-[11px] font-bold text-slate-800 block mb-1">
                       学籍番号 <span className="text-rose-500 font-bold">* 必須</span>
@@ -1046,14 +1140,27 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
                         try {
                           localStorage.setItem('ot_student_id', val);
                         } catch {}
-                        const p = getStudentProfile();
-                        saveStudentProfile({
-                          studentId: val,
-                          grade: p?.grade || 1,
-                          name: studentName
-                        });
+                        const clean = val.normalize('NFKC').trim().toUpperCase();
+                        const p: StudentLocalProfile = {
+                          studentId: clean,
+                          grade: studentGrade || 1,
+                          name: studentName.trim() || undefined
+                        };
+                        saveStudentProfile(p);
+                        if (typeof window !== 'undefined') {
+                          window.dispatchEvent(new CustomEvent('student_profile_updated', { detail: p }));
+                        }
+                        if (clean) {
+                          saveStudentsToRoster({
+                            studentId: clean,
+                            grade: studentGrade || 1,
+                            name: studentName.trim() || undefined,
+                            notes: '受験画面より登録',
+                            registeredAt: new Date().toISOString()
+                          }).catch(() => {});
+                        }
                       }}
-                      placeholder="例: OT2024001"
+                      placeholder="例: 100003"
                       required
                       className="w-full px-3 py-2 bg-white border border-slate-300 font-mono font-bold focus:border-teal-500 focus:ring-1 focus:ring-teal-500 rounded-lg text-xs"
                     />
@@ -1069,13 +1176,29 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
                       type="text"
                       value={studentName}
                       onChange={(e) => {
-                        setStudentName(e.target.value);
+                        const val = e.target.value;
+                        setStudentName(val);
                         try {
-                          localStorage.setItem('ot_student_name', e.target.value);
+                          localStorage.setItem('ot_student_name', val);
                         } catch {}
-                        const p = getStudentProfile();
-                        if (p) {
-                          saveStudentProfile({ ...p, name: e.target.value });
+                        const cleanId = studentId.normalize('NFKC').trim().toUpperCase();
+                        const p: StudentLocalProfile = {
+                          studentId: cleanId,
+                          grade: studentGrade || 1,
+                          name: val.trim() || undefined
+                        };
+                        saveStudentProfile(p);
+                        if (typeof window !== 'undefined') {
+                          window.dispatchEvent(new CustomEvent('student_profile_updated', { detail: p }));
+                        }
+                        if (cleanId) {
+                          saveStudentsToRoster({
+                            studentId: cleanId,
+                            grade: studentGrade || 1,
+                            name: val.trim() || undefined,
+                            notes: '受験画面より登録',
+                            registeredAt: new Date().toISOString()
+                          }).catch(() => {});
                         }
                       }}
                       placeholder="例: 山田 太郎"
