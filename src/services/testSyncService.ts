@@ -155,7 +155,7 @@ export async function saveDeliveredTestToCloud(
 
   try {
     const testDocRef = doc(db, TESTS_COLLECTION, test.id);
-    const dataToSave = {
+    const dataToSave: Record<string, any> = {
       id: test.id,
       code: test.code || '',
       title: test.title,
@@ -164,7 +164,10 @@ export async function saveDeliveredTestToCloud(
       questionIds: test.questionIds || questions.map(q => q.id),
       totalQuestions: questions.length,
       instructions: test.instructions || '',
-      questions: questions
+      questions: questions,
+      targetType: test.targetType || 'all',
+      ...(test.targetGrades ? { targetGrades: test.targetGrades } : {}),
+      ...(test.targetStudentIds ? { targetStudentIds: test.targetStudentIds } : {})
     };
 
     await setDoc(testDocRef, dataToSave, { merge: true });
@@ -197,7 +200,10 @@ export async function fetchDeliveredTestsFromCloud(): Promise<DeliveredTest[]> {
         questionIds: data.questionIds || [],
         totalQuestions: data.totalQuestions || 0,
         instructions: data.instructions,
-        questions: data.questions
+        questions: data.questions,
+        targetType: data.targetType || 'all',
+        targetGrades: data.targetGrades,
+        targetStudentIds: data.targetStudentIds
       };
       if (!isSampleTest(item)) {
         tests.push(item);
@@ -238,7 +244,10 @@ export async function fetchDeliveredTestFromCloud(testIdOrCode: string): Promise
         questionIds: data.questionIds || [],
         totalQuestions: data.totalQuestions || 0,
         instructions: data.instructions,
-        questions: data.questions
+        questions: data.questions,
+        targetType: data.targetType || 'all',
+        targetGrades: data.targetGrades,
+        targetStudentIds: data.targetStudentIds
       };
       return { test, questions: data.questions || [] };
     }
@@ -257,7 +266,10 @@ export async function fetchDeliveredTestFromCloud(testIdOrCode: string): Promise
         questionIds: data.questionIds || [],
         totalQuestions: data.totalQuestions || 0,
         instructions: data.instructions,
-        questions: data.questions
+        questions: data.questions,
+        targetType: data.targetType || 'all',
+        targetGrades: data.targetGrades,
+        targetStudentIds: data.targetStudentIds
       };
       return { test, questions: data.questions || [] };
     }
@@ -294,7 +306,10 @@ export function subscribeDeliveredTests(
             questionIds: data.questionIds || [],
             totalQuestions: data.totalQuestions || 0,
             instructions: data.instructions,
-            questions: data.questions
+            questions: data.questions,
+            targetType: data.targetType || 'all',
+            targetGrades: data.targetGrades,
+            targetStudentIds: data.targetStudentIds
           };
           if (!isSampleTest(item)) {
             tests.push(item);

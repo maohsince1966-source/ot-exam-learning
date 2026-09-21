@@ -26,7 +26,7 @@ import {
   saveQuestionsToCloud
 } from './services/testSyncService';
 import { recordQuizAttempt } from './services/studentStudyHistoryService';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Bell, ChevronRight } from 'lucide-react';
 
 const STORAGE_KEY_QUESTIONS = 'ot_exam_questions_db_v2';
 const STORAGE_KEY_DELIVERED = 'ot_exam_delivered_tests_v2';
@@ -108,6 +108,16 @@ export default function App() {
     questions: Question[];
   } | null>(null);
 
+  // Real-time toast alert when a new test arrives while student is on screen
+  const [newTestAlert, setNewTestAlert] = useState<{
+    test: DeliveredTest;
+    questions: Question[];
+  } | null>(null);
+
+  // Track known test IDs to identify genuinely new deliveries
+  const knownTestIdsRef = React.useRef<Set<string>>(new Set(deliveredTests.map(t => t.id)));
+  const isInitialSyncDoneRef = React.useRef<boolean>(false);
+
   // Teacher Authentication state (passcode lock)
   const [isTeacherAuthenticated, setIsTeacherAuthenticated] = useState(false);
   const [showTeacherAuthModal, setShowTeacherAuthModal] = useState(false);
@@ -121,94 +131,141 @@ export default function App() {
   } | null>(null);
 
   // Fetch and synchronize delivered tests and questions from server and Firestore
+  const syncAllTests = React.useCallback(async () => {
+    let latestTestsList: DeliveredTest[] = [];
+
+    // 1. Fetch from server API with high reliability
+    try {
+      const serverTests = await fetchAllServerTests();
+      if (serverTests && serverTests.length > 0) {
+        const validServerTests = serverTests.filter(t => !isSampleTest(t));
+        if (validServerTests.length > 0) {
+          latestTestsList = validServerTests;
+          setDeliveredTests(prev => {
+            const existingMap = new Map<string, DeliveredTest>(prev.map(t => [t.id, t]));
+            validServerTests.forEach(st => {
+              existingMap.set(st.id, st);
+            });
+            const merged = Array.from(existingMap.values());
+            merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+            return merged;
+          });
+
+          // Also harvest questions into questions state
+          setQuestions(prev => {
+            const map = new Map(prev.map(q => [q.id, q]));
+            let added = false;
+            validServerTests.forEach(st => {
+              if (Array.isArray(st.questions)) {
+                st.questions.forEach(q => {
+                  if (q && q.id && !isSampleQuestion(q) && !map.has(q.id)) {
+                    map.set(q.id, {
+                      ...q,
+                      imageUrl: q.imageUrl ? normalizeImageUrl(q.imageUrl) : q.imageUrl
+                    });
+                    added = true;
+                  }
+                });
+              }
+            });
+            return added ? Array.from(map.values()) : prev;
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('Server test sync notice:', e);
+    }
+
+    // 2. Fetch directly from Cloud Firestore as well (for cross-container / multi-user cloud sync)
+    try {
+      const cloudTests = await fetchDeliveredTestsFromCloud();
+      if (cloudTests && cloudTests.length > 0) {
+        const validCloudTests = cloudTests.filter(t => !isSampleTest(t));
+        if (validCloudTests.length > 0) {
+          latestTestsList = [...latestTestsList, ...validCloudTests];
+          setDeliveredTests(prev => {
+            const existingMap = new Map<string, DeliveredTest>(prev.map(t => [t.id, t]));
+            validCloudTests.forEach(ct => {
+              existingMap.set(ct.id, ct);
+            });
+            const merged = Array.from(existingMap.values());
+            merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+            return merged;
+          });
+
+          // Harvest questions
+          setQuestions(prev => {
+            const map = new Map(prev.map(q => [q.id, q]));
+            let added = false;
+            validCloudTests.forEach(ct => {
+              if (Array.isArray(ct.questions)) {
+                ct.questions.forEach(q => {
+                  if (q && q.id && !isSampleQuestion(q) && !map.has(q.id)) {
+                    map.set(q.id, {
+                      ...q,
+                      imageUrl: q.imageUrl ? normalizeImageUrl(q.imageUrl) : q.imageUrl
+                    });
+                    added = true;
+                  }
+                });
+              }
+            });
+            return added ? Array.from(map.values()) : prev;
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('Cloud test sync notice:', e);
+    }
+
+    // Detect newly arrived tests for active student notification
+    if (isInitialSyncDoneRef.current && latestTestsList.length > 0) {
+      for (const t of latestTestsList) {
+        if (!knownTestIdsRef.current.has(t.id)) {
+          knownTestIdsRef.current.add(t.id);
+          // Only pop alert if student is not already taking a quiz
+          setNewTestAlert({
+            test: t,
+            questions: t.questions || []
+          });
+          break;
+        }
+      }
+    } else {
+      latestTestsList.forEach(t => knownTestIdsRef.current.add(t.id));
+      isInitialSyncDoneRef.current = true;
+    }
+  }, []);
+
   useEffect(() => {
-    const syncAllTests = async () => {
-      // 1. Fetch from server API
-      try {
-        const serverTests = await fetchAllServerTests();
-        if (serverTests && serverTests.length > 0) {
-          const validServerTests = serverTests.filter(t => !isSampleTest(t));
-          if (validServerTests.length > 0) {
-            setDeliveredTests(prev => {
-              const existingMap = new Map(prev.map(t => [t.id, t]));
-              validServerTests.forEach(st => {
-                existingMap.set(st.id, st);
-              });
-              return Array.from(existingMap.values());
-            });
-
-            // Also harvest questions into questions state
-            setQuestions(prev => {
-              const map = new Map(prev.map(q => [q.id, q]));
-              let added = false;
-              validServerTests.forEach(st => {
-                if (Array.isArray(st.questions)) {
-                  st.questions.forEach(q => {
-                    if (q && q.id && !isSampleQuestion(q) && !map.has(q.id)) {
-                      map.set(q.id, {
-                        ...q,
-                        imageUrl: q.imageUrl ? normalizeImageUrl(q.imageUrl) : q.imageUrl
-                      });
-                      added = true;
-                    }
-                  });
-                }
-              });
-              return added ? Array.from(map.values()) : prev;
-            });
-          }
-        }
-      } catch (e) {
-        console.warn('Server test sync notice:', e);
-      }
-
-      // 2. Fetch directly from Cloud Firestore as well (backup for cross-container sync)
-      try {
-        const cloudTests = await fetchDeliveredTestsFromCloud();
-        if (cloudTests && cloudTests.length > 0) {
-          const validCloudTests = cloudTests.filter(t => !isSampleTest(t));
-          if (validCloudTests.length > 0) {
-            setDeliveredTests(prev => {
-              const existingMap = new Map(prev.map(t => [t.id, t]));
-              validCloudTests.forEach(ct => {
-                existingMap.set(ct.id, ct);
-              });
-              return Array.from(existingMap.values());
-            });
-
-            // Harvest questions
-            setQuestions(prev => {
-              const map = new Map(prev.map(q => [q.id, q]));
-              let added = false;
-              validCloudTests.forEach(ct => {
-                if (Array.isArray(ct.questions)) {
-                  ct.questions.forEach(q => {
-                    if (q && q.id && !isSampleQuestion(q) && !map.has(q.id)) {
-                      map.set(q.id, {
-                        ...q,
-                        imageUrl: q.imageUrl ? normalizeImageUrl(q.imageUrl) : q.imageUrl
-                      });
-                      added = true;
-                    }
-                  });
-                }
-              });
-              return added ? Array.from(map.values()) : prev;
-            });
-          }
-        }
-      } catch (e) {
-        console.warn('Cloud test sync notice:', e);
-      }
-    };
-
-    // Initial sync
+    // Initial immediate sync
     syncAllTests();
 
-    // 10s auto-polling to ensure multi-user & cross-window updates
-    const pollTimer = setInterval(syncAllTests, 10000);
+    // Fast 3.5s auto-polling to ensure instant delivery even across separate devices and network hops
+    const pollTimer = setInterval(syncAllTests, 3500);
 
-    // 2. Fetch past questions from server API (fallback to Cloud Firestore once)
+    // Instant sync triggers on tab focus, visibility change, online reconnect, or custom storage event
+    const handleActiveSync = () => {
+      syncAllTests();
+    };
+
+    window.addEventListener('focus', handleActiveSync);
+    window.addEventListener('online', handleActiveSync);
+    window.addEventListener('delivered_tests_updated', handleActiveSync);
+    window.addEventListener('storage', (e) => {
+      if (e.key === STORAGE_KEY_DELIVERED) {
+        handleActiveSync();
+      }
+    });
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        handleActiveSync();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // Fetch past questions from server API (fallback to Cloud Firestore once)
     fetchQuestionsFromServer().then(async (serverQs) => {
       let finalQs = serverQs;
       if (!finalQs || finalQs.length === 0) {
@@ -231,43 +288,68 @@ export default function App() {
       }
     });
 
-    // 3. Real-time subscribe to Firestore delivered tests (for immediate exam delivery)
+    // Real-time subscribe to Firestore delivered tests (for immediate exam delivery via WebSocket/gRPC)
     const unsubscribeTests = subscribeDeliveredTests((cloudTests) => {
       const validCloudTests = cloudTests.filter(t => !isSampleTest(t));
-      setDeliveredTests(prev => {
-        const map = new Map(prev.map(t => [t.id, t]));
-        validCloudTests.forEach(ct => {
-          map.set(ct.id, ct);
+      if (validCloudTests.length > 0) {
+        setDeliveredTests(prev => {
+          const map = new Map<string, DeliveredTest>(prev.map(t => [t.id, t]));
+          validCloudTests.forEach(ct => {
+            map.set(ct.id, ct);
+          });
+          const merged = Array.from(map.values());
+          merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          return merged;
         });
-        return Array.from(map.values());
-      });
 
-      // Extract questions from cloud tests as well
-      setQuestions(prev => {
-        const map = new Map(prev.map(q => [q.id, q]));
-        let added = false;
-        validCloudTests.forEach(ct => {
-          if (Array.isArray(ct.questions)) {
-            ct.questions.forEach(q => {
-              if (q && q.id && !isSampleQuestion(q) && !map.has(q.id)) {
-                map.set(q.id, {
-                  ...q,
-                  imageUrl: q.imageUrl ? normalizeImageUrl(q.imageUrl) : q.imageUrl
-                });
-                added = true;
-              }
-            });
+        // Trigger new test notification if appropriate
+        if (isInitialSyncDoneRef.current) {
+          for (const t of validCloudTests) {
+            if (!knownTestIdsRef.current.has(t.id)) {
+              knownTestIdsRef.current.add(t.id);
+              setNewTestAlert({
+                test: t,
+                questions: t.questions || []
+              });
+              break;
+            }
           }
+        } else {
+          validCloudTests.forEach(t => knownTestIdsRef.current.add(t.id));
+          isInitialSyncDoneRef.current = true;
+        }
+
+        // Extract questions from cloud tests as well
+        setQuestions(prev => {
+          const map = new Map(prev.map(q => [q.id, q]));
+          let added = false;
+          validCloudTests.forEach(ct => {
+            if (Array.isArray(ct.questions)) {
+              ct.questions.forEach(q => {
+                if (q && q.id && !isSampleQuestion(q) && !map.has(q.id)) {
+                  map.set(q.id, {
+                    ...q,
+                    imageUrl: q.imageUrl ? normalizeImageUrl(q.imageUrl) : q.imageUrl
+                  });
+                  added = true;
+                }
+              });
+            }
+          });
+          return added ? Array.from(map.values()) : prev;
         });
-        return added ? Array.from(map.values()) : prev;
-      });
+      }
     });
 
     return () => {
       clearInterval(pollTimer);
+      window.removeEventListener('focus', handleActiveSync);
+      window.removeEventListener('online', handleActiveSync);
+      window.removeEventListener('delivered_tests_updated', handleActiveSync);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       unsubscribeTests();
     };
-  }, []);
+  }, [syncAllTests]);
 
   // Check for shared test in URL (?code=... or #test=...) on mount and on hash changes
   useEffect(() => {
@@ -476,11 +558,23 @@ export default function App() {
       questions: qs
     };
 
-    // 2. Update local state immediately
-    setDeliveredTests(prev => [updatedTest, ...prev.filter(t => t.id !== test.id)]);
+    // 2. Update local state immediately & mark as known
+    knownTestIdsRef.current.add(updatedTest.id);
+    setDeliveredTests(prev => {
+      const merged = [updatedTest, ...prev.filter(t => t.id !== test.id)];
+      try {
+        localStorage.setItem(STORAGE_KEY_DELIVERED, JSON.stringify(merged));
+      } catch {}
+      return merged;
+    });
 
-    // 3. Save to Firestore Cloud (with code and questions)
-    await saveDeliveredTestToCloud(updatedTest, qs);
+    // Notify other tabs and components immediately
+    window.dispatchEvent(new CustomEvent('delivered_tests_updated'));
+
+    // 3. Save to Firestore Cloud in background (non-blocking)
+    saveDeliveredTestToCloud(updatedTest, qs).catch(err => {
+      console.warn('Firestore cloud save notice:', err);
+    });
   };
 
   const handleDeleteDeliveredTest = (testId: string) => {
@@ -618,6 +712,7 @@ export default function App() {
             onViewHistoryResult={handleViewHistoryResult}
             onSwitchToTeacherMode={() => handleRequestSwitchMode('teacher')}
             onJoinByCode={handleJoinByCode}
+            onRefreshTests={syncAllTests}
           />
         ) : (
           <TeacherView
@@ -642,6 +737,70 @@ export default function App() {
           onStartNow={handleStartReceivedTest}
           onSaveForLater={handleSaveReceivedTestForLater}
         />
+      )}
+
+      {/* Real-time New Test Delivery Alert Toast for Students */}
+      {newTestAlert && mode === 'student' && !activeQuiz && (
+        <div className="fixed bottom-4 right-4 sm:bottom-6 sm:right-6 z-50 max-w-md w-[calc(100vw-2rem)] bg-slate-900 text-white rounded-2xl p-4 shadow-2xl border border-teal-500/50 flex flex-col gap-3 animate-fade-in">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-teal-500 text-white flex items-center justify-center shrink-0 shadow-md">
+                <Bell className="w-5 h-5 animate-bounce" />
+              </div>
+              <div>
+                <span className="text-[10px] font-black tracking-wider uppercase bg-teal-500/20 text-teal-300 border border-teal-500/40 px-2 py-0.5 rounded">
+                  小テストが配信されました
+                </span>
+                <h4 className="font-bold text-sm text-white mt-1 line-clamp-1">
+                  {newTestAlert.test.title}
+                </h4>
+                <p className="text-xs text-slate-300">
+                  全{newTestAlert.test.totalQuestions || newTestAlert.questions.length}問
+                  {newTestAlert.test.targetType === 'grade' && newTestAlert.test.targetGrades && (
+                    <span>（{newTestAlert.test.targetGrades.join('・')}年生対象）</span>
+                  )}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setNewTestAlert(null)}
+              className="text-slate-400 hover:text-white p-1 rounded transition-colors text-xs"
+              title="閉じる"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="flex items-center justify-end gap-2 pt-1 border-t border-slate-800">
+            <button
+              type="button"
+              onClick={() => setNewTestAlert(null)}
+              className="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors"
+            >
+              あとで
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const alertData = newTestAlert;
+                setNewTestAlert(null);
+                const testQs = alertData.questions.length > 0
+                  ? alertData.questions
+                  : alertData.test.questionIds.map(id => questions.find(q => q.id === id)).filter((q): q is Question => q !== undefined);
+                
+                if (testQs.length > 0) {
+                  handleStartQuiz(testQs, alertData.test.title, alertData.test.id, true);
+                } else {
+                  handleJoinByCode(alertData.test.code || alertData.test.id);
+                }
+              }}
+              className="px-4 py-1.5 bg-teal-500 hover:bg-teal-400 text-slate-950 font-extrabold text-xs rounded-xl transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
+            >
+              <span>今すぐ受験する</span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
       )}
 
       {/* In-app Confirmation Modal */}

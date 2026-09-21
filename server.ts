@@ -304,6 +304,19 @@ async function startServer() {
   });
 
   // Get a specific test and its questions by 6-digit code or testId
+  app.get("/api/tests/code/:code", (req, res) => {
+    const { code } = req.params;
+    const clean = code.trim().toUpperCase().replace(/[^A-Z0-9-]/g, "");
+    if (storedTests[clean]) {
+      return res.json(storedTests[clean]);
+    }
+    const found = Object.values(storedTests).find(item => item.code === clean);
+    if (found) {
+      return res.json(found);
+    }
+    return res.status(404).json({ error: "Test not found" });
+  });
+
   app.get("/api/tests/:codeOrId", (req, res) => {
     const { codeOrId } = req.params;
     const clean = codeOrId.trim().toUpperCase().replace(/[^A-Z0-9-]/g, "");
