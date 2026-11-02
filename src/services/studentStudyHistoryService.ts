@@ -11,7 +11,7 @@ export interface QuestionStudyRecord {
   lastSelectedChoices?: number[];
 }
 
-export type StudyFilterType = 'all' | 'incorrect' | 'unattempted' | 'correct';
+export type StudyFilterType = 'all' | 'incorrect' | 'unattempted' | 'correct' | 'bookmarked';
 
 export const STORAGE_KEY_STUDY_RECORDS = 'ot_question_study_records';
 

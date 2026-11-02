@@ -66,8 +66,8 @@ export const ShareTestModal: React.FC<ShareTestModalProps> = ({
         setQrDataUrl(qr);
       } catch (qrErr: any) {
         console.warn('First QR attempt failed, trying fallback URL...', qrErr);
-        // Fallback to origin with code query
-        const shortOriginUrl = `${window.location.origin}/?code=${generatedCode || test.id}`;
+        // Fallback to origin with role=student and code query
+        const shortOriginUrl = `${window.location.origin}/?role=student&code=${generatedCode || test.id}`;
         setShareUrl(shortOriginUrl);
         const qrFallback = await generateTestQRCodeDataUrl(shortOriginUrl);
         setQrDataUrl(qrFallback);

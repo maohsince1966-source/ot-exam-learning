@@ -15,6 +15,7 @@ async function startServer() {
   const QUESTIONS_FILE = path.join(DATA_DIR, "questions.json");
   const SUBMISSIONS_FILE = path.join(DATA_DIR, "submissions.json");
   const STUDENTS_FILE = path.join(DATA_DIR, "students_roster.json");
+  const DELETED_TESTS_FILE = path.join(DATA_DIR, "deleted_tests.json");
 
   if (!fs.existsSync(DATA_DIR)) {
     try {
@@ -34,6 +35,28 @@ async function startServer() {
   } catch (err) {
     console.error("Failed to read tests file", err);
   }
+
+  // Load deleted tests tombstone list
+  let storedDeletedTestIds: Set<string> = new Set();
+  try {
+    if (fs.existsSync(DELETED_TESTS_FILE)) {
+      const raw = fs.readFileSync(DELETED_TESTS_FILE, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        storedDeletedTestIds = new Set(parsed);
+      }
+    }
+  } catch (err) {
+    console.error("Failed to read deleted tests file", err);
+  }
+
+  const saveDeletedTestsToDisk = () => {
+    try {
+      fs.writeFileSync(DELETED_TESTS_FILE, JSON.stringify(Array.from(storedDeletedTestIds), null, 2), "utf-8");
+    } catch (err) {
+      console.error("Failed to write deleted tests to disk", err);
+    }
+  };
 
   // Filter out any legacy sample test
   if (storedTests["XCFTZL"]) {
@@ -239,20 +262,88 @@ async function startServer() {
     }
   });
 
+  // Helper to mark a test as permanently deleted and purge from storage
+  const markAndPurgeTest = (identifier: string) => {
+    if (!identifier) return false;
+    const raw = identifier.trim();
+    const upper = raw.toUpperCase();
+    let foundAny = false;
+
+    // Add to tombstone set
+    storedDeletedTestIds.add(raw);
+    storedDeletedTestIds.add(upper);
+
+    // Also look for matching keys in storedTests
+    const keysToDelete: string[] = [];
+    for (const [key, item] of Object.entries(storedTests)) {
+      if (!item) continue;
+      const testId = item.test?.id;
+      const itemCode = item.code;
+      if (
+        key === raw ||
+        key.toUpperCase() === upper ||
+        itemCode === raw ||
+        itemCode?.toUpperCase() === upper ||
+        testId === raw ||
+        testId?.toUpperCase() === upper ||
+        item.test?.code === raw ||
+        item.test?.code?.toUpperCase() === upper
+      ) {
+        keysToDelete.push(key);
+        if (testId) {
+          storedDeletedTestIds.add(testId);
+          storedDeletedTestIds.add(testId.toUpperCase());
+        }
+        if (itemCode) {
+          storedDeletedTestIds.add(itemCode);
+          storedDeletedTestIds.add(itemCode.toUpperCase());
+        }
+        foundAny = true;
+      }
+    }
+
+    for (const key of keysToDelete) {
+      delete storedTests[key];
+    }
+
+    if (keysToDelete.length > 0) {
+      saveTestsToDisk();
+    }
+    saveDeletedTestsToDisk();
+    return foundAny;
+  };
+
   // Get list of all delivered tests
   app.get("/api/tests", (req, res) => {
-    const list = Object.values(storedTests).map(item => ({
-      code: item.code,
-      test: {
-        ...item.test,
+    const list = Object.values(storedTests)
+      .filter(item => {
+        if (!item || !item.test) return false;
+        const testId = item.test.id;
+        const code = item.code;
+        if (
+          storedDeletedTestIds.has(code) ||
+          storedDeletedTestIds.has(code.toUpperCase()) ||
+          (testId && (storedDeletedTestIds.has(testId) || storedDeletedTestIds.has(testId.toUpperCase())))
+        ) {
+          return false;
+        }
+        return true;
+      })
+      .map(item => ({
         code: item.code,
-        questions: item.questions || item.test.questions || []
-      },
-      questionsCount: item.questions ? item.questions.length : 0,
-      createdAt: item.createdAt
-    }));
+        test: {
+          ...item.test,
+          code: item.code,
+          questions: item.questions || item.test.questions || []
+        },
+        questionsCount: item.questions ? item.questions.length : 0,
+        createdAt: item.createdAt
+      }));
     list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    res.json({ tests: list });
+    res.json({
+      tests: list,
+      deletedTestIds: Array.from(storedDeletedTestIds)
+    });
   });
 
   // Save / Share a test
@@ -288,6 +379,16 @@ async function startServer() {
         };
       }
 
+      // Ensure newly delivered test is not in deleted tombstones
+      if (test.id) {
+        storedDeletedTestIds.delete(test.id);
+        storedDeletedTestIds.delete(test.id.toUpperCase());
+      }
+      if (code) {
+        storedDeletedTestIds.delete(code);
+        storedDeletedTestIds.delete(code.toUpperCase());
+      }
+      saveDeletedTestsToDisk();
       saveTestsToDisk();
 
       return res.json({
@@ -303,10 +404,102 @@ async function startServer() {
     }
   });
 
+  // Client-Server Bidirectional Tests Sync (rehydrates server storage after container restarts)
+  app.post("/api/tests/sync", (req, res) => {
+    try {
+      const payload = req.body;
+      const tests = Array.isArray(payload) ? payload : (payload?.tests || []);
+      if (!Array.isArray(tests)) {
+        return res.status(400).json({ error: "Invalid payload: tests array required" });
+      }
+
+      let restoredCount = 0;
+      for (const t of tests) {
+        if (!t || !t.id) continue;
+        const testId = String(t.id).trim();
+        const code = t.code ? String(t.code).trim().toUpperCase() : "";
+
+        // Skip if explicitly deleted
+        if (
+          storedDeletedTestIds.has(testId) ||
+          storedDeletedTestIds.has(testId.toUpperCase()) ||
+          (code && (storedDeletedTestIds.has(code) || storedDeletedTestIds.has(code.toUpperCase())))
+        ) {
+          continue;
+        }
+
+        // Find existing test by id or code
+        let targetCode = code;
+        const existingEntry = Object.values(storedTests).find(
+          item => item.test?.id === testId || (code && item.code === code)
+        );
+
+        if (existingEntry) {
+          targetCode = existingEntry.code;
+          storedTests[targetCode] = {
+            ...existingEntry,
+            test: {
+              ...existingEntry.test,
+              ...t,
+              code: targetCode
+            },
+            questions: (Array.isArray(t.questions) && t.questions.length > 0)
+              ? t.questions
+              : existingEntry.questions,
+            createdAt: existingEntry.createdAt || t.createdAt || new Date().toISOString()
+          };
+        } else {
+          if (!targetCode) {
+            do {
+              targetCode = generateCode();
+            } while (storedTests[targetCode]);
+          }
+          storedTests[targetCode] = {
+            code: targetCode,
+            test: { ...t, code: targetCode },
+            questions: t.questions || [],
+            createdAt: t.createdAt || new Date().toISOString()
+          };
+          restoredCount++;
+        }
+      }
+
+      if (restoredCount > 0 || tests.length > 0) {
+        saveTestsToDisk();
+      }
+
+      const activeList = Object.values(storedTests).map(item => ({
+        code: item.code,
+        test: {
+          ...item.test,
+          code: item.code,
+          questions: item.questions || item.test?.questions || []
+        },
+        questionsCount: item.questions ? item.questions.length : 0,
+        createdAt: item.createdAt
+      }));
+
+      return res.json({
+        success: true,
+        restoredCount,
+        totalTests: activeList.length,
+        tests: activeList
+      });
+    } catch (err: any) {
+      console.error("Error syncing tests:", err);
+      return res.status(500).json({ error: err.message || "Failed to sync tests" });
+    }
+  });
+
   // Get a specific test and its questions by 6-digit code or testId
   app.get("/api/tests/code/:code", (req, res) => {
     const { code } = req.params;
     const clean = code.trim().toUpperCase().replace(/[^A-Z0-9-]/g, "");
+
+    if (storedDeletedTestIds.has(clean) || storedDeletedTestIds.has(code.trim())) {
+      return res.status(404).json({ error: "Test has been deleted", deleted: true });
+    }
+
     if (storedTests[clean]) {
       return res.json(storedTests[clean]);
     }
@@ -320,6 +513,10 @@ async function startServer() {
   app.get("/api/tests/:codeOrId", (req, res) => {
     const { codeOrId } = req.params;
     const clean = codeOrId.trim().toUpperCase().replace(/[^A-Z0-9-]/g, "");
+
+    if (storedDeletedTestIds.has(clean) || storedDeletedTestIds.has(codeOrId.trim())) {
+      return res.status(404).json({ error: "Test has been deleted", deleted: true });
+    }
 
     // Check by code
     if (storedTests[clean]) {
@@ -337,22 +534,27 @@ async function startServer() {
     return res.status(404).json({ error: "Test not found" });
   });
 
-  // Delete a delivered test
+  // Delete a delivered test by code or ID (DELETE method)
   app.delete("/api/tests/:codeOrId", (req, res) => {
     const { codeOrId } = req.params;
-    const clean = codeOrId.trim().toUpperCase();
+    markAndPurgeTest(codeOrId);
+    return res.json({
+      success: true,
+      message: "Test deleted successfully",
+      deletedTestIds: Array.from(storedDeletedTestIds)
+    });
+  });
 
-    const keyToDelete = storedTests[clean]
-      ? clean
-      : Object.keys(storedTests).find(k => storedTests[k].test.id === codeOrId);
-
-    if (keyToDelete) {
-      delete storedTests[keyToDelete];
-      saveTestsToDisk();
-      return res.json({ success: true });
-    }
-
-    return res.status(404).json({ error: "Test not found" });
+  // Delete a delivered test by code and/or ID (POST method for extra reliability)
+  app.post("/api/tests/delete", (req, res) => {
+    const { id, code } = req.body || {};
+    if (id) markAndPurgeTest(id);
+    if (code) markAndPurgeTest(code);
+    return res.json({
+      success: true,
+      message: "Test deleted successfully",
+      deletedTestIds: Array.from(storedDeletedTestIds)
+    });
   });
 
   // SUBMISSIONS API (Reliable backend storage for student quiz results)
@@ -393,6 +595,81 @@ async function startServer() {
       console.error("Error saving submission:", err);
       return res.status(500).json({ error: err.message || "Failed to save submission" });
     }
+  });
+
+  // Client-Server Bidirectional Submissions Sync (rehydrates server storage from client cache)
+  app.post("/api/submissions/sync", (req, res) => {
+    try {
+      const payload = req.body;
+      const list = Array.isArray(payload) ? payload : (payload?.submissions || []);
+      if (!Array.isArray(list)) {
+        return res.status(400).json({ error: "Invalid payload: submissions array required" });
+      }
+
+      let addedCount = 0;
+      let updatedCount = 0;
+
+      for (const s of list) {
+        if (!s || !s.testId) continue;
+        const subId = String(s.id || `sub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`).trim();
+        const existingIdx = storedSubmissions.findIndex(item => item.id === subId);
+        
+        const record = {
+          ...s,
+          id: subId,
+          testId: String(s.testId).trim(),
+          testCode: s.testCode ? String(s.testCode).trim().toUpperCase() : "",
+          testTitle: String(s.testTitle || "小テスト").trim(),
+          studentName: String(s.studentName || "受講生").trim(),
+          studentId: String(s.studentId || "").trim(),
+          score: typeof s.score === "number" ? s.score : 0,
+          total: typeof s.total === "number" ? s.total : 0,
+          scorePercent: typeof s.scorePercent === "number" ? s.scorePercent : 0,
+          passed: Boolean(s.passed),
+          timeSpentSeconds: Number(s.timeSpentSeconds) || 0,
+          categoryStats: s.categoryStats || {},
+          userAnswers: s.userAnswers || {},
+          submittedAt: s.submittedAt || new Date().toISOString()
+        };
+
+        if (existingIdx >= 0) {
+          storedSubmissions[existingIdx] = record;
+          updatedCount++;
+        } else {
+          storedSubmissions.unshift(record);
+          addedCount++;
+        }
+      }
+
+      // Sort newest first
+      storedSubmissions.sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
+
+      if (addedCount > 0 || updatedCount > 0) {
+        saveSubmissionsToDisk();
+      }
+
+      return res.json({
+        success: true,
+        addedCount,
+        updatedCount,
+        totalSubmissions: storedSubmissions.length,
+        submissions: storedSubmissions
+      });
+    } catch (err: any) {
+      console.error("Error syncing submissions:", err);
+      return res.status(500).json({ error: err.message || "Failed to sync submissions" });
+    }
+  });
+
+  // Diagnostics and recovery stats endpoint
+  app.get("/api/system/recovery-stats", (req, res) => {
+    res.json({
+      testsCount: Object.keys(storedTests).length,
+      submissionsCount: storedSubmissions.length,
+      studentsCount: storedStudents.length,
+      deletedTestsCount: storedDeletedTestIds.size,
+      serverTime: new Date().toISOString()
+    });
   });
 
   // Get submissions (optionally filtered by testId)

@@ -18,18 +18,13 @@ export const StudentPortalGuideModal: React.FC<StudentPortalGuideModalProps> = (
   const [copiedCode, setCopiedCode] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [loadingQr, setLoadingQr] = useState(true);
-  const [selectedPortalMode, setSelectedPortalMode] = useState<'render' | 'current'>('render');
 
   const origin = window.location.origin;
   const pathname = window.location.pathname;
 
-  // Render standalone portal URL or current origin URL
-  const renderBaseUrl = 'https://ot-exam-learning.onrender.com';
+  // Unified Student Portal URL (?role=student)
   const currentBaseUrl = `${origin}${pathname}?role=student`;
-
-  const studentUrl = selectedPortalMode === 'render'
-    ? (latestTestCode ? `${renderBaseUrl}/?code=${latestTestCode}` : renderBaseUrl)
-    : (latestTestCode ? `${currentBaseUrl}&code=${latestTestCode}` : currentBaseUrl);
+  const studentUrl = latestTestCode ? `${currentBaseUrl}&code=${latestTestCode}` : currentBaseUrl;
 
   useEffect(() => {
     let isMounted = true;
@@ -115,36 +110,15 @@ export const StudentPortalGuideModal: React.FC<StudentPortalGuideModalProps> = (
           </button>
         </div>
 
-        {/* Target Portal Host Selector */}
-        <div className="bg-slate-100 p-1.5 rounded-2xl flex items-center gap-1.5 text-xs font-semibold">
-          <button
-            type="button"
-            onClick={() => setSelectedPortalMode('render')}
-            className={`flex-1 py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-              selectedPortalMode === 'render'
-                ? 'bg-white text-teal-800 shadow-xs font-bold'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <span>学生専用サイト (Render)</span>
-            <span className="bg-teal-100 text-teal-800 text-[10px] px-1.5 py-0.2 rounded font-mono">推奨</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setSelectedPortalMode('current')}
-            className={`flex-1 py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-              selectedPortalMode === 'current'
-                ? 'bg-white text-slate-900 shadow-xs font-bold'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <span>本アプリの学生モード</span>
-          </button>
+        <div className="bg-teal-50/80 border border-teal-200/90 rounded-2xl p-3.5 text-xs text-teal-950 leading-relaxed space-y-1">
+          <div className="flex items-center gap-1.5 font-bold text-teal-900">
+            <span className="w-2 h-2 rounded-full bg-teal-600 animate-pulse shrink-0" />
+            <span>完全同期・解答自動回収対応（学生専用ポータル）</span>
+          </div>
+          <p className="text-[11px] text-teal-800 leading-normal">
+            教員メニュー（問題編集・名簿等）が完全に非表示になった学生専用画面です。教室のスクリーンにQRコードを投影するか、URLを学生へ配布してください。教員が配信したテストが即座に届き、解答結果も自動回収されます。
+          </p>
         </div>
-
-        <p className="text-xs text-slate-600 leading-relaxed">
-          学生は教員画面を通さず、各自のスマートフォンやPCから独立して本ポータルにアクセスできます。授業のスクリーンにQRコードを投影するか、URLを学生へ配布してください。
-        </p>
 
         {/* QR Code Card */}
         <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex flex-col items-center justify-center text-center space-y-3">

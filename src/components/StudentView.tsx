@@ -3,6 +3,9 @@ import { Question, DeliveredTest, QuizAttemptResult, StudentLocalProfile } from 
 import { parseCategory, isPickTwoQuestion } from '../utils/categoryHelper';
 import { StudentIdRegistrationModal } from './StudentIdRegistrationModal';
 import { getStudentProfile, isTestEligibleForStudent } from '../services/studentRosterService';
+import { isTestDeleted } from '../utils/shareTest';
+import { MultiYearSelector } from './MultiYearSelector';
+import { StudentAnalyticsDashboard } from './StudentAnalyticsDashboard';
 import { 
   Search, 
   BookOpen, 
@@ -33,7 +36,10 @@ import {
   Flame,
   Check,
   RefreshCw,
-  Trash2
+  Trash2,
+  Bookmark,
+  BookmarkCheck,
+  BookmarkMinus
 } from 'lucide-react';
 import {
   getQuestionStudyRecords,
@@ -44,6 +50,14 @@ import {
   StudyFilterType,
   QuestionStudyRecord
 } from '../services/studentStudyHistoryService';
+import {
+  getBookmarkedQuestionIds,
+  toggleQuestionBookmark,
+  subscribeBookmarks,
+  removeQuestionBookmark,
+  clearAllQuestionBookmarks,
+  removeBookmarksForQuestions
+} from '../services/studentBookmarkService';
 
 interface StudentViewProps {
   questions: Question[];
@@ -74,7 +88,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
   isStudentStandalone = false
 }) => {
   // If there are tests delivered by teacher, prioritize today's tests tab for the student
-  const [activeTab, setActiveTab] = useState<'practice' | 'today-tests' | 'history'>(() => {
+  const [activeTab, setActiveTab] = useState<'practice' | 'bookmarks' | 'today-tests' | 'history'>(() => {
     if (deliveredTests.length > 0) return 'today-tests';
     return 'practice';
   });
@@ -84,6 +98,40 @@ export const StudentView: React.FC<StudentViewProps> = ({
   const [codeError, setCodeError] = useState<string | null>(null);
   const [isRefreshingTests, setIsRefreshingTests] = useState(false);
   const [refreshToast, setRefreshToast] = useState<string | null>(null);
+
+  // Bookmarks ("あとで見直す") state
+  const [bookmarkedQuestionIds, setBookmarkedQuestionIds] = useState<Set<string>>(() => {
+    return new Set(getBookmarkedQuestionIds());
+  });
+  const [bookmarkActionToast, setBookmarkActionToast] = useState<string | null>(null);
+
+  // Subscribe to real-time bookmark updates
+  useEffect(() => {
+    const unsubscribe = subscribeBookmarks((ids) => {
+      setBookmarkedQuestionIds(new Set(ids));
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleToggleBookmark = (questionId: string) => {
+    const isNowBookmarked = toggleQuestionBookmark(questionId);
+    setBookmarkedQuestionIds(prev => {
+      const next = new Set(prev);
+      if (isNowBookmarked) next.add(questionId);
+      else next.delete(questionId);
+      return next;
+    });
+    setBookmarkActionToast(isNowBookmarked ? '「あとで見直す」に登録しました' : '「あとで見直す」登録を解除しました');
+    setTimeout(() => setBookmarkActionToast(null), 2500);
+  };
+
+  // Review List (Bookmarked Questions) specific filters and settings
+  const [bookmarkSearchKeyword, setBookmarkSearchKeyword] = useState('');
+  const [bookmarkCategoryFilter, setBookmarkCategoryFilter] = useState<string>('all');
+  const [bookmarkStatusFilter, setBookmarkStatusFilter] = useState<'all' | 'incorrect' | 'unattempted' | 'correct'>('all');
+  const [bookmarkPracticeLimit, setBookmarkPracticeLimit] = useState<number>(10);
+  const [bookmarkPracticeShuffle, setBookmarkPracticeShuffle] = useState(true);
+  const [bookmarkPracticeInstantFeedback, setBookmarkPracticeInstantFeedback] = useState(true);
 
   const handleManualRefresh = async () => {
     setIsRefreshingTests(true);
@@ -163,7 +211,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
 
   const [selectedMajorCategory, setSelectedMajorCategory] = useState<string>('all');
   const [selectedSubCategory, setSelectedSubCategory] = useState<string>('all');
-  const [selectedYear, setSelectedYear] = useState<string>('all');
+  const [selectedYears, setSelectedYears] = useState<string[]>([]);
   const [filterPickTwoOnly, setFilterPickTwoOnly] = useState<boolean>(false);
   const [filterHasImageOnly, setFilterHasImageOnly] = useState<boolean>(false);
   
@@ -178,7 +226,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
   // Reset visible limit whenever filters change
   useEffect(() => {
     setVisibleQuestionsCount(30);
-  }, [selectedMajorCategory, selectedSubCategory, selectedYear, filterPickTwoOnly, filterHasImageOnly, searchKeyword, studyFilter]);
+  }, [selectedMajorCategory, selectedSubCategory, selectedYears, filterPickTwoOnly, filterHasImageOnly, searchKeyword, studyFilter]);
 
   // Extract unique major categories
   const majorCategories = useMemo(() => {
@@ -213,6 +261,18 @@ export const StudentView: React.FC<StudentViewProps> = ({
     return Array.from(set).sort((a, b) => b.localeCompare(a));
   }, [questions]);
 
+  // Question counts by year for the multi-year picker
+  const questionCountsByYear = useMemo(() => {
+    const map: Record<string, number> = {};
+    questions.forEach(q => {
+      if (q.year) {
+        const y = String(q.year);
+        map[y] = (map[y] || 0) + 1;
+      }
+    });
+    return map;
+  }, [questions]);
+
   // Filtered questions based on criteria
   const filteredQuestions = useMemo(() => {
     return questions.filter(q => {
@@ -222,7 +282,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
 
       const matchMajor = selectedMajorCategory === 'all' || major === selectedMajorCategory;
       const matchSub = selectedSubCategory === 'all' || sub === selectedSubCategory;
-      const matchYear = selectedYear === 'all' || String(q.year) === selectedYear;
+      const matchYear = selectedYears.length === 0 || selectedYears.includes(String(q.year));
       
       if (!matchMajor || !matchSub || !matchYear) return false;
 
@@ -234,7 +294,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
         if (!q.imageUrl) return false;
       }
 
-      // Filter by studyFilter (learning & mistake history)
+      // Filter by studyFilter (learning & mistake history & bookmarks)
       if (studyFilter === 'incorrect') {
         const rec = studyRecords[q.id];
         // Must have been attempted and last attempt was incorrect (needs review)
@@ -247,6 +307,8 @@ export const StudentView: React.FC<StudentViewProps> = ({
         const rec = studyRecords[q.id];
         // Must have been attempted and last attempt was correct
         if (!rec || rec.totalAttempts === 0 || !rec.lastIsCorrect) return false;
+      } else if (studyFilter === 'bookmarked') {
+        if (!bookmarkedQuestionIds.has(q.id)) return false;
       }
 
       if (!searchKeyword.trim()) return true;
@@ -261,7 +323,93 @@ export const StudentView: React.FC<StudentViewProps> = ({
         q.choices.some(c => c.toLowerCase().includes(kw))
       );
     });
-  }, [questions, selectedMajorCategory, selectedSubCategory, selectedYear, searchKeyword, filterPickTwoOnly, filterHasImageOnly, studyFilter, studyRecords]);
+  }, [questions, selectedMajorCategory, selectedSubCategory, selectedYears, searchKeyword, filterPickTwoOnly, filterHasImageOnly, studyFilter, studyRecords, bookmarkedQuestionIds]);
+
+  // All bookmarked questions list for dedicated review list
+  const bookmarkedQuestions = useMemo(() => {
+    const list: Question[] = [];
+    const map = new Map<string, Question>(questions.map(q => [q.id, q]));
+    bookmarkedQuestionIds.forEach(id => {
+      const q = map.get(id);
+      if (q) list.push(q);
+    });
+    return list;
+  }, [bookmarkedQuestionIds, questions]);
+
+  // Filtered bookmarked questions within the "復習用問題リスト" tab
+  const filteredBookmarkedQuestions = useMemo(() => {
+    return bookmarkedQuestions.filter(q => {
+      const p = parseCategory(q.category);
+      const major = q.majorCategory || p.major;
+      if (bookmarkCategoryFilter !== 'all' && major !== bookmarkCategoryFilter) {
+        return false;
+      }
+
+      const rec = studyRecords[q.id];
+      if (bookmarkStatusFilter === 'incorrect') {
+        if (!rec || rec.totalAttempts === 0 || rec.lastIsCorrect) return false;
+      } else if (bookmarkStatusFilter === 'unattempted') {
+        if (rec && rec.totalAttempts > 0) return false;
+      } else if (bookmarkStatusFilter === 'correct') {
+        if (!rec || rec.totalAttempts === 0 || !rec.lastIsCorrect) return false;
+      }
+
+      if (bookmarkSearchKeyword.trim()) {
+        const kw = bookmarkSearchKeyword.toLowerCase();
+        return (
+          q.id.toLowerCase().includes(kw) ||
+          q.question.toLowerCase().includes(kw) ||
+          q.explanation.toLowerCase().includes(kw) ||
+          (q.category && q.category.toLowerCase().includes(kw)) ||
+          q.choices.some(c => c.toLowerCase().includes(kw))
+        );
+      }
+      return true;
+    });
+  }, [bookmarkedQuestions, bookmarkCategoryFilter, bookmarkStatusFilter, bookmarkSearchKeyword, studyRecords]);
+
+  // Bookmarked stats breakdown
+  const bookmarkStats = useMemo(() => {
+    let incorrect = 0;
+    let unattempted = 0;
+    let correct = 0;
+    bookmarkedQuestions.forEach(q => {
+      const rec = studyRecords[q.id];
+      if (!rec || rec.totalAttempts === 0) {
+        unattempted++;
+      } else if (rec.lastIsCorrect) {
+        correct++;
+      } else {
+        incorrect++;
+      }
+    });
+    return {
+      total: bookmarkedQuestions.length,
+      incorrect,
+      unattempted,
+      correct
+    };
+  }, [bookmarkedQuestions, studyRecords]);
+
+  // Launch review practice for bookmarked questions
+  const handleStartBookmarkPractice = () => {
+    let pool = [...filteredBookmarkedQuestions];
+    if (pool.length === 0) {
+      alert('復習用のブックマーク問題がありません。');
+      return;
+    }
+    if (bookmarkPracticeShuffle) {
+      pool.sort(() => Math.random() - 0.5);
+    }
+    const count = bookmarkPracticeLimit === -1 ? pool.length : Math.min(pool.length, bookmarkPracticeLimit);
+    const selected = pool.slice(0, count);
+
+    const title = bookmarkStatusFilter === 'incorrect'
+      ? `復習用問題（苦手・ミス）演習 (${selected.length}問)`
+      : `あとで見直す・復習問題演習 (${selected.length}問)`;
+
+    onStartQuiz(selected, title, undefined, bookmarkPracticeInstantFeedback);
+  };
 
   // Safe subset for rendering to prevent mobile DOM memory crash
   const visibleQuestions = useMemo(() => {
@@ -297,7 +445,11 @@ export const StudentView: React.FC<StudentViewProps> = ({
       filterLabel = '【正解済みの再演習】';
     }
 
-    const title = `${filterLabel}過去問演習（${categoryTitle}・${selected.length}問）`;
+    const yearsLabel = selectedYears.length > 0 
+      ? (selectedYears.length === 1 ? `第${selectedYears[0]}回 ` : `${selectedYears.map(y => `第${y}回`).join('・')} `)
+      : '';
+
+    const title = `${filterLabel}${yearsLabel}過去問演習（${categoryTitle}・${selected.length}問）`;
 
     onStartQuiz(selected, title, undefined, instantFeedbackMode);
   };
@@ -312,6 +464,12 @@ export const StudentView: React.FC<StudentViewProps> = ({
 
   // Launch delivered test
   const handleStartDeliveredTest = (test: DeliveredTest, overrideProfile?: StudentLocalProfile | null) => {
+    if (isTestDeleted(test.id) || (test.code && isTestDeleted(test.code))) {
+      alert('この小テストは教員により配信停止・削除されたため、受験できません。');
+      if (onRefreshTests) onRefreshTests();
+      return;
+    }
+
     const activeProfile = overrideProfile !== undefined ? overrideProfile : (studentProfile || getStudentProfile());
     // If student has not registered student ID, prompt registration first
     if (!activeProfile || !activeProfile.studentId) {
@@ -341,11 +499,35 @@ export const StudentView: React.FC<StudentViewProps> = ({
   const handleResetFilters = () => {
     setSelectedMajorCategory('all');
     setSelectedSubCategory('all');
-    setSelectedYear('all');
+    setSelectedYears([]);
     setSearchKeyword('');
     setFilterPickTwoOnly(false);
     setFilterHasImageOnly(false);
     setStudyFilter('all');
+  };
+
+  const handleDrilldownCategoryPractice = (majorCategory: string, subCategory?: string) => {
+    setSelectedMajorCategory(majorCategory);
+    if (subCategory && subCategory !== '全般・基礎') {
+      setSelectedSubCategory(subCategory);
+    } else {
+      setSelectedSubCategory('all');
+    }
+    setStudyFilter('all');
+    setActiveTab('practice');
+    window.scrollTo({ top: 380, behavior: 'smooth' });
+  };
+
+  const handleDrilldownYearPractice = (year: string) => {
+    const cleanYear = year.replace(/[^0-9]/g, '');
+    if (cleanYear) {
+      setSelectedYears([cleanYear]);
+    }
+    setSelectedMajorCategory('all');
+    setSelectedSubCategory('all');
+    setStudyFilter('all');
+    setActiveTab('practice');
+    window.scrollTo({ top: 380, behavior: 'smooth' });
   };
 
   return (
@@ -447,6 +629,23 @@ export const StudentView: React.FC<StudentViewProps> = ({
             type="button"
             onClick={() => setRegistrationToast(null)}
             className="text-emerald-200 hover:text-white p-1 rounded-md"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {/* Bookmark Action Toast Notification */}
+      {bookmarkActionToast && (
+        <div className="bg-amber-600 text-white px-4 py-2.5 rounded-xl shadow-lg flex items-center justify-between gap-2 animate-in fade-in slide-in-from-top-2 duration-200">
+          <div className="flex items-center gap-2 text-xs sm:text-sm font-bold">
+            <BookmarkCheck className="w-4 h-4 text-amber-200 shrink-0" />
+            <span>{bookmarkActionToast}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setBookmarkActionToast(null)}
+            className="text-amber-200 hover:text-white p-1 rounded-md cursor-pointer"
           >
             ×
           </button>
@@ -593,6 +792,24 @@ export const StudentView: React.FC<StudentViewProps> = ({
           </button>
 
           <button
+            onClick={() => setActiveTab('bookmarks')}
+            className={`py-3 px-4 text-sm font-semibold border-b-2 flex items-center space-x-2 transition-colors relative shrink-0 ${
+              activeTab === 'bookmarks'
+                ? 'border-amber-500 text-amber-800 font-bold'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            <Bookmark className={`w-4 h-4 ${activeTab === 'bookmarks' ? 'text-amber-500 fill-amber-500' : ''}`} />
+            <span>復習用問題リスト</span>
+            {bookmarkedQuestionIds.size > 0 && (
+              <span className="bg-amber-500 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full flex items-center gap-0.5 shadow-2xs">
+                <span>{bookmarkedQuestionIds.size}</span>
+                <span className="hidden sm:inline text-[9px]">問</span>
+              </span>
+            )}
+          </button>
+
+          <button
             onClick={() => setActiveTab('today-tests')}
             className={`py-3 px-4 text-sm font-semibold border-b-2 flex items-center space-x-2 transition-colors relative shrink-0 ${
               activeTab === 'today-tests'
@@ -619,7 +836,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
             }`}
           >
             <BarChart3 className="w-4 h-4" />
-            <span>学習履歴・成績</span>
+            <span>成績グラフ・弱点分析</span>
             {quizHistory.length > 0 && (
               <span className="bg-slate-200 text-slate-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full">
                 {quizHistory.length}
@@ -763,8 +980,8 @@ export const StudentView: React.FC<StudentViewProps> = ({
               </div>
             </div>
 
-            {/* 4 Extraction Filter Buttons */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
+            {/* 5 Extraction Filter Buttons */}
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 pt-1">
               {/* All */}
               <button
                 type="button"
@@ -809,6 +1026,34 @@ export const StudentView: React.FC<StudentViewProps> = ({
                     {studyStats.incorrect}問
                   </span>
                   <XCircle className={`w-4 h-4 ${studyFilter === 'incorrect' ? 'text-white' : 'text-rose-500'}`} />
+                </div>
+              </button>
+
+              {/* Bookmarked (あとで見直す・復習用) */}
+              <button
+                type="button"
+                onClick={() => setStudyFilter('bookmarked')}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                  studyFilter === 'bookmarked'
+                    ? 'bg-amber-500 text-white border-amber-600 shadow-sm ring-2 ring-amber-300'
+                    : 'bg-amber-50/70 hover:bg-amber-100/70 text-amber-950 border-amber-200'
+                }`}
+              >
+                <div className={`text-[11px] font-bold flex items-center justify-between ${studyFilter === 'bookmarked' ? 'text-white' : 'text-amber-800'}`}>
+                  <span>🔖 あとで見直す</span>
+                  {bookmarkedQuestionIds.size > 0 && (
+                    <span className={`text-[9px] px-1.5 py-0.2 rounded-full font-extrabold ${
+                      studyFilter === 'bookmarked' ? 'bg-white text-amber-700' : 'bg-amber-500 text-white'
+                    }`}>
+                      復習用
+                    </span>
+                  )}
+                </div>
+                <div className="text-base font-black flex items-center justify-between mt-1">
+                  <span className={studyFilter === 'bookmarked' ? 'text-white' : 'text-amber-900'}>
+                    {bookmarkedQuestionIds.size}問
+                  </span>
+                  <Bookmark className={`w-4 h-4 ${studyFilter === 'bookmarked' ? 'text-white fill-white' : 'text-amber-600'}`} />
                 </div>
               </button>
 
@@ -866,7 +1111,7 @@ export const StudentView: React.FC<StudentViewProps> = ({
                     <Search className="w-4 h-4 text-teal-600 mr-1.5" />
                     過去問検索フィルター
                   </h2>
-                  {(selectedMajorCategory !== 'all' || selectedSubCategory !== 'all' || selectedYear !== 'all' || searchKeyword || filterPickTwoOnly || filterHasImageOnly || studyFilter !== 'all') && (
+                  {(selectedMajorCategory !== 'all' || selectedSubCategory !== 'all' || selectedYears.length > 0 || searchKeyword || filterPickTwoOnly || filterHasImageOnly || studyFilter !== 'all') && (
                     <button
                       onClick={handleResetFilters}
                       className="text-xs text-slate-500 hover:text-teal-700 flex items-center gap-1 cursor-pointer"
@@ -949,23 +1194,16 @@ export const StudentView: React.FC<StudentViewProps> = ({
                 </select>
               </div>
 
-              {/* Year selector */}
+              {/* Multi-Year selector */}
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1.5">
-                  実施回・年
-                </label>
-                <select
-                  value={selectedYear}
-                  onChange={(e) => setSelectedYear(e.target.value)}
-                  className="w-full px-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500"
-                >
-                  <option value="all">すべての年度</option>
-                  {years.map(y => (
-                    <option key={y} value={y}>
-                      第{y}回 国家試験
-                    </option>
-                  ))}
-                </select>
+                <MultiYearSelector
+                  years={years}
+                  selectedYears={selectedYears}
+                  onChange={setSelectedYears}
+                  questionCountsByYear={questionCountsByYear}
+                  theme="teal"
+                  label="実施回・年"
+                />
               </div>
 
               {/* Multiple Choice (Pick 2) & Image Filters */}
@@ -1300,6 +1538,30 @@ export const StudentView: React.FC<StudentViewProps> = ({
                       </button>
                     </div>
                   </div>
+                ) : studyFilter === 'bookmarked' ? (
+                  <div className="space-y-3">
+                    <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto">
+                      <Bookmark className="w-7 h-7" />
+                    </div>
+                    <div>
+                      <p className="font-bold text-base text-slate-900">
+                        「あとで見直す」に登録された問題がありません
+                      </p>
+                      <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
+                        過去問演習や小テストを解答中に、問題カードの「あとで見直す」ボタンを押すと、ここにブックマークされて集中復習できます。
+                      </p>
+                    </div>
+                    <div className="flex items-center justify-center gap-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setStudyFilter('all')}
+                        className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <BookOpen className="w-3.5 h-3.5" />
+                        <span>すべての問題（{questions.length}問）を表示</span>
+                      </button>
+                    </div>
+                  </div>
                 ) : (
                   <>
                     <Filter className="w-8 h-8 text-slate-400 mx-auto" />
@@ -1332,11 +1594,19 @@ export const StudentView: React.FC<StudentViewProps> = ({
                           : 'border-slate-200 hover:border-teal-300'
                       }`}
                     >
-                      <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
                         <div className="flex items-center flex-wrap gap-1.5">
                           <span className="font-mono text-xs font-bold bg-slate-900 text-white px-2 py-0.5 rounded">
                             {q.id}
                           </span>
+
+                          {/* あとで見直すブックマークバッジ */}
+                          {bookmarkedQuestionIds.has(q.id) && (
+                            <span className="text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 rounded flex items-center gap-1">
+                              <Bookmark className="w-3 h-3 text-amber-600 fill-amber-500" />
+                              あとで見直す
+                            </span>
+                          )}
 
                           {/* 学習・正誤状況バッジ */}
                           {(!rec || rec.totalAttempts === 0) ? (
@@ -1381,13 +1651,34 @@ export const StudentView: React.FC<StudentViewProps> = ({
                           </span>
                         </div>
 
-                        <button
-                          onClick={() => handleStartSingle(q)}
-                          className="text-xs font-medium text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200 px-2.5 py-1 rounded-lg transition-colors flex items-center space-x-1 shrink-0"
-                        >
-                          <Play className="w-3 h-3 fill-teal-700" />
-                          <span>この問題を解く</span>
-                        </button>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {/* あとで見直す トグルボタン */}
+                          <button
+                            type="button"
+                            onClick={() => handleToggleBookmark(q.id)}
+                            className={`text-xs font-semibold px-2.5 py-1 rounded-lg border transition-colors flex items-center gap-1 cursor-pointer ${
+                              bookmarkedQuestionIds.has(q.id)
+                                ? 'bg-amber-500 hover:bg-amber-600 text-white border-amber-600 shadow-2xs'
+                                : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300'
+                            }`}
+                            title={bookmarkedQuestionIds.has(q.id) ? '「あとで見直す」を解除' : 'この問題を「あとで見直す」に登録'}
+                          >
+                            {bookmarkedQuestionIds.has(q.id) ? (
+                              <BookmarkCheck className="w-3.5 h-3.5 fill-white" />
+                            ) : (
+                              <Bookmark className="w-3.5 h-3.5 text-amber-600" />
+                            )}
+                            <span className="hidden sm:inline">{bookmarkedQuestionIds.has(q.id) ? '見直し登録済' : 'あとで見直す'}</span>
+                          </button>
+
+                          <button
+                            onClick={() => handleStartSingle(q)}
+                            className="text-xs font-medium text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200 px-2.5 py-1 rounded-lg transition-colors flex items-center space-x-1 shrink-0 cursor-pointer"
+                          >
+                            <Play className="w-3 h-3 fill-teal-700" />
+                            <span>この問題を解く</span>
+                          </button>
+                        </div>
                       </div>
 
                       <p className="text-sm font-medium text-slate-800 line-clamp-2">
@@ -1434,6 +1725,379 @@ export const StudentView: React.FC<StudentViewProps> = ({
         </div>
       </div>
     )}
+
+      {/* TAB: 復習用問題リスト (あとで見直す) */}
+      {activeTab === 'bookmarks' && (
+        <div className="space-y-6">
+          {/* Header Card */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3.5">
+              <div className="flex items-start sm:items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-700 flex items-center justify-center font-bold shrink-0">
+                  <Bookmark className="w-5 h-5 text-amber-600 fill-amber-500" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2 className="text-base font-bold text-slate-900">
+                      復習用問題リスト（あとで見直す）
+                    </h2>
+                    <span className="text-[11px] font-bold text-amber-900 bg-amber-100 px-2.5 py-0.5 rounded-full border border-amber-300 flex items-center gap-1">
+                      <span>{bookmarkStats.total}問 登録中</span>
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    小テストや過去問演習中に「あとで見直す」を押した問題が蓄積されています。苦手分野や要チェック問題を一括演習できます。
+                  </p>
+                </div>
+              </div>
+
+              {/* Action buttons */}
+              {bookmarkStats.total > 0 && (
+                <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
+                  {bookmarkStats.correct > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const correctIds = bookmarkedQuestions
+                          .filter(q => studyRecords[q.id]?.lastIsCorrect)
+                          .map(q => q.id);
+                        if (correctIds.length > 0) {
+                          removeBookmarksForQuestions(correctIds);
+                          setBookmarkActionToast(`正解済みの ${correctIds.length} 問を復習リストから解除しました`);
+                          setTimeout(() => setBookmarkActionToast(null), 3000);
+                        }
+                      }}
+                      className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-xl text-xs font-bold transition-colors flex items-center gap-1 cursor-pointer"
+                      title="直近で正解できた問題を復習リストから解除します"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>正解済み（{bookmarkStats.correct}問）を一括解除</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm('「あとで見直す」に登録したすべてのブックマークを解除しますか？')) {
+                        clearAllQuestionBookmarks();
+                        setBookmarkActionToast('すべてのブックマークを解除しました');
+                        setTimeout(() => setBookmarkActionToast(null), 3000);
+                      }
+                    }}
+                    className="px-3 py-1.5 bg-slate-50 hover:bg-rose-50 text-slate-600 hover:text-rose-700 border border-slate-200 hover:border-rose-200 rounded-xl text-xs font-semibold transition-colors flex items-center gap-1 cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>全解除</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* 4 Summary Stats Cards */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              <div className="p-3 bg-amber-50/60 rounded-xl border border-amber-200 text-left">
+                <div className="text-[11px] font-bold text-amber-800">🔖 登録総数</div>
+                <div className="text-xl font-black text-amber-950 mt-0.5">{bookmarkStats.total} <span className="text-xs font-normal text-amber-800">問</span></div>
+              </div>
+              <div className="p-3 bg-rose-50/60 rounded-xl border border-rose-200 text-left">
+                <div className="text-[11px] font-bold text-rose-700">❌ 要復習（過去ミス）</div>
+                <div className="text-xl font-black text-rose-950 mt-0.5">{bookmarkStats.incorrect} <span className="text-xs font-normal text-rose-700">問</span></div>
+              </div>
+              <div className="p-3 bg-teal-50/60 rounded-xl border border-teal-200 text-left">
+                <div className="text-[11px] font-bold text-teal-800">❓ 未解答</div>
+                <div className="text-xl font-black text-teal-950 mt-0.5">{bookmarkStats.unattempted} <span className="text-xs font-normal text-teal-800">問</span></div>
+              </div>
+              <div className="p-3 bg-emerald-50/60 rounded-xl border border-emerald-200 text-left">
+                <div className="text-[11px] font-bold text-emerald-800">✓ 正解済み（習得）</div>
+                <div className="text-xl font-black text-emerald-950 mt-0.5">{bookmarkStats.correct} <span className="text-xs font-normal text-emerald-800">問</span></div>
+              </div>
+            </div>
+          </div>
+
+          {/* If there are bookmarked questions: Practice Launcher Card */}
+          {bookmarkedQuestions.length > 0 && (
+            <div className="bg-gradient-to-r from-amber-500/10 via-amber-400/5 to-teal-500/10 border-2 border-amber-300 rounded-2xl p-5 shadow-xs space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                    <BookmarkCheck className="w-5 h-5 text-amber-600" />
+                    <span>復習用問題リストから演習を開始する</span>
+                  </h3>
+                  <p className="text-xs text-slate-600 mt-1">
+                    現在の抽出条件に合致する <strong>{filteredBookmarkedQuestions.length}問</strong> から復習小テストを生成します。
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleStartBookmarkPractice}
+                  disabled={filteredBookmarkedQuestions.length === 0}
+                  className="px-6 py-3 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-extrabold text-sm rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer shrink-0"
+                >
+                  <Play className="w-4 h-4 fill-white" />
+                  <span>復習演習を開始 ({bookmarkPracticeLimit === -1 ? filteredBookmarkedQuestions.length : Math.min(filteredBookmarkedQuestions.length, bookmarkPracticeLimit)}問)</span>
+                </button>
+              </div>
+
+              {/* Practice Options */}
+              <div className="pt-3 border-t border-amber-200/80 grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">出題問題数:</label>
+                  <div className="flex gap-1.5">
+                    {[10, 20, 30, -1].map((cnt) => (
+                      <button
+                        key={cnt}
+                        type="button"
+                        onClick={() => setBookmarkPracticeLimit(cnt)}
+                        className={`px-3 py-1 rounded-lg border font-bold text-xs transition-colors cursor-pointer ${
+                          bookmarkPracticeLimit === cnt
+                            ? 'bg-amber-500 text-white border-amber-600'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-amber-50'
+                        }`}
+                      >
+                        {cnt === -1 ? '全問' : `${cnt}問`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-2 cursor-pointer font-bold text-slate-700 mt-4 sm:mt-0">
+                    <input
+                      type="checkbox"
+                      checked={bookmarkPracticeShuffle}
+                      onChange={(e) => setBookmarkPracticeShuffle(e.target.checked)}
+                      className="rounded text-amber-600 focus:ring-amber-500 w-4 h-4"
+                    />
+                    <span>出題順をシャッフルする</span>
+                  </label>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-2 cursor-pointer font-bold text-slate-700 mt-4 sm:mt-0">
+                    <input
+                      type="checkbox"
+                      checked={bookmarkPracticeInstantFeedback}
+                      onChange={(e) => setBookmarkPracticeInstantFeedback(e.target.checked)}
+                      className="rounded text-amber-600 focus:ring-amber-500 w-4 h-4"
+                    />
+                    <span>1問ごとに正答・解説を表示</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Filter Bar */}
+          {bookmarkedQuestions.length > 0 && (
+            <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="font-bold text-slate-600 flex items-center gap-1">
+                  <Filter className="w-3.5 h-3.5 text-amber-600" />
+                  絞り込み:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setBookmarkStatusFilter('all')}
+                  className={`px-3 py-1 rounded-lg border text-xs font-semibold cursor-pointer ${
+                    bookmarkStatusFilter === 'all'
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  すべて ({bookmarkedQuestions.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBookmarkStatusFilter('incorrect')}
+                  className={`px-3 py-1 rounded-lg border text-xs font-semibold cursor-pointer ${
+                    bookmarkStatusFilter === 'incorrect'
+                      ? 'bg-rose-600 text-white border-rose-600'
+                      : 'bg-rose-50 text-rose-800 border-rose-200 hover:bg-rose-100'
+                  }`}
+                >
+                  ❌ 要復習 ({bookmarkStats.incorrect})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBookmarkStatusFilter('unattempted')}
+                  className={`px-3 py-1 rounded-lg border text-xs font-semibold cursor-pointer ${
+                    bookmarkStatusFilter === 'unattempted'
+                      ? 'bg-teal-700 text-white border-teal-700'
+                      : 'bg-teal-50 text-teal-800 border-teal-200 hover:bg-teal-100'
+                  }`}
+                >
+                  ❓ 未解答 ({bookmarkStats.unattempted})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBookmarkStatusFilter('correct')}
+                  className={`px-3 py-1 rounded-lg border text-xs font-semibold cursor-pointer ${
+                    bookmarkStatusFilter === 'correct'
+                      ? 'bg-emerald-600 text-white border-emerald-600'
+                      : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                  }`}
+                >
+                  ✓ 正解済み ({bookmarkStats.correct})
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={bookmarkSearchKeyword}
+                  onChange={(e) => setBookmarkSearchKeyword(e.target.value)}
+                  placeholder="復習リスト内を検索..."
+                  className="px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500/20 w-full sm:w-48"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Bookmarked Questions List */}
+          {bookmarkedQuestions.length === 0 ? (
+            <div className="bg-white rounded-2xl border border-slate-200 p-10 sm:p-14 text-center text-slate-500 space-y-4 shadow-xs">
+              <div className="w-16 h-16 rounded-2xl bg-amber-50 text-amber-500 flex items-center justify-center mx-auto">
+                <Bookmark className="w-8 h-8" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-extrabold text-lg text-slate-900">
+                  現在、復習用問題リストに登録されている問題はありません
+                </h3>
+                <p className="text-xs sm:text-sm text-slate-500 max-w-lg mx-auto">
+                  「過去問検索・演習」や小テストを解答中に、問題カードの <strong>「あとで見直す」</strong> ボタンを押すと、ここに問題がストックされます。
+                </p>
+              </div>
+              <div className="pt-2 flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('practice')}
+                  className="px-5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors inline-flex items-center gap-2 cursor-pointer"
+                >
+                  <BookOpen className="w-4 h-4" />
+                  <span>過去問検索・演習へ移動する</span>
+                </button>
+              </div>
+            </div>
+          ) : filteredBookmarkedQuestions.length === 0 ? (
+            <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center text-slate-500 space-y-3">
+              <Filter className="w-8 h-8 text-slate-400 mx-auto" />
+              <p className="font-bold text-sm text-slate-800">条件に一致する復習問題がありません</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setBookmarkStatusFilter('all');
+                  setBookmarkCategoryFilter('all');
+                  setBookmarkSearchKeyword('');
+                }}
+                className="text-xs text-amber-700 underline font-bold cursor-pointer"
+              >
+                絞り込み条件をリセット
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="text-xs font-bold text-slate-600 px-1">
+                抽出された復習問題: <strong className="text-amber-800">{filteredBookmarkedQuestions.length}</strong> 問
+              </div>
+              {filteredBookmarkedQuestions.map((q) => {
+                const p = parseCategory(q.category);
+                const major = q.majorCategory || p.major;
+                const sub = q.subCategory || p.sub;
+                const isPick2 = isPickTwoQuestion(q.question, q.answer);
+                const rec = studyRecords[q.id];
+
+                return (
+                  <div
+                    key={q.id}
+                    className={`bg-white rounded-xl border p-4 transition-colors shadow-2xs space-y-2.5 ${
+                      rec && rec.totalAttempts > 0 && !rec.lastIsCorrect
+                        ? 'border-rose-200 hover:border-rose-300 bg-rose-50/10'
+                        : 'border-amber-200/90 hover:border-amber-300'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center flex-wrap gap-1.5">
+                        <span className="font-mono text-xs font-bold bg-slate-900 text-white px-2 py-0.5 rounded">
+                          {q.id}
+                        </span>
+                        <span className="text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 rounded flex items-center gap-1">
+                          <Bookmark className="w-3 h-3 text-amber-600 fill-amber-500" />
+                          見直し対象
+                        </span>
+
+                        {(!rec || rec.totalAttempts === 0) ? (
+                          <span className="text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200 px-2 py-0.5 rounded flex items-center gap-1">
+                            <HelpCircle className="w-3 h-3 text-slate-400" />
+                            未解答
+                          </span>
+                        ) : rec.lastIsCorrect ? (
+                          <span className="text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-300 px-2 py-0.5 rounded flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                            正解済み {rec.totalAttempts > 1 ? `(${rec.correctAttempts}/${rec.totalAttempts}回)` : ''}
+                          </span>
+                        ) : (
+                          <span className="text-[11px] font-extrabold bg-rose-50 text-rose-700 border border-rose-300 px-2 py-0.5 rounded flex items-center gap-1">
+                            <XCircle className="w-3 h-3 text-rose-600" />
+                            要復習・前回ミス {rec.totalAttempts > 1 ? `(${rec.incorrectAttempts}回ミス)` : ''}
+                          </span>
+                        )}
+
+                        <span className="text-xs font-semibold bg-teal-50 text-teal-700 border border-teal-200 px-2 py-0.5 rounded">
+                          {major}
+                        </span>
+                        {sub && (
+                          <span className="text-xs font-medium bg-slate-100 text-slate-700 px-2 py-0.5 rounded">
+                            {sub}
+                          </span>
+                        )}
+                        {isPick2 && (
+                          <span className="text-[11px] font-extrabold bg-amber-100 text-amber-800 border border-amber-300 px-2 py-0.5 rounded">
+                            2つ選べ
+                          </span>
+                        )}
+                        <span className="text-xs text-slate-500">
+                          第{q.year}回
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleBookmark(q.id)}
+                          className="px-2.5 py-1 text-xs font-bold text-rose-700 hover:text-rose-800 hover:bg-rose-50 border border-rose-200 rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                          title="この問題を復習リスト（ブックマーク）から削除"
+                        >
+                          <BookmarkMinus className="w-3.5 h-3.5" />
+                          <span>解除</span>
+                        </button>
+                        <button
+                          onClick={() => handleStartSingle(q)}
+                          className="text-xs font-bold text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200 px-3 py-1 rounded-lg transition-colors flex items-center space-x-1 cursor-pointer shadow-2xs"
+                        >
+                          <Play className="w-3 h-3 fill-teal-700" />
+                          <span>この問題を解く</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <p className="text-sm font-medium text-slate-800 leading-relaxed">
+                      {q.question}
+                    </p>
+
+                    <div className="text-xs text-slate-500 flex flex-wrap gap-x-4 gap-y-1">
+                      {q.choices.map((c, i) => (
+                        <span key={i} className="truncate max-w-[200px]">
+                          {i + 1}. {c}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* TAB 2: 今日のテスト (教員配信) */}
       {activeTab === 'today-tests' && (
@@ -1731,9 +2395,17 @@ export const StudentView: React.FC<StudentViewProps> = ({
         </div>
       )}
 
-      {/* TAB 3: 学習履歴・成績 */}
+      {/* TAB 3: 成績グラフ・弱点分析・学習履歴 */}
       {activeTab === 'history' && (
         <div className="space-y-6">
+          {/* Recharts Analytics Dashboard */}
+          <StudentAnalyticsDashboard
+            questions={questions}
+            quizHistory={quizHistory}
+            onSelectCategoryForPractice={handleDrilldownCategoryPractice}
+            onSelectYearForPractice={handleDrilldownYearPractice}
+          />
+
           {/* 問題ごとの学習記憶・進捗サマリーカード */}
           <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">

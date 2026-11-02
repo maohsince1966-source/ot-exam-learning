@@ -10,6 +10,8 @@ import { StudentRosterManager } from './StudentRosterManager';
 import { GoogleDocsExportModal } from './GoogleDocsExportModal';
 import { WordExportModal } from './WordExportModal';
 import { StudentPortalGuideModal } from './StudentPortalGuideModal';
+import { MultiYearSelector } from './MultiYearSelector';
+import { DataRecoveryModal } from './DataRecoveryModal';
 import { fetchStudentRoster, subscribeStudentRoster } from '../services/studentRosterService';
 import { subscribeAllSubmissions } from '../services/testSyncService';
 import { SubmissionRecord } from '../types';
@@ -47,7 +49,8 @@ import {
   ClipboardList,
   FileText,
   Printer,
-  FileDown
+  FileDown,
+  ShieldCheck
 } from 'lucide-react';
 import { normalizeImageUrl, convertFileToOptimizedDataUrl, isGoogleDriveUrl } from '../utils/imageHelper';
 import { QuestionImage } from './QuestionImage';
@@ -58,10 +61,11 @@ interface TeacherViewProps {
   onAddQuestion: (q: Question) => void;
   onImportQuestions: (qs: Question[], replace: boolean) => void;
   onDeliverTest: (test: DeliveredTest) => void;
-  onDeleteDeliveredTest: (testId: string) => void;
+  onDeleteDeliveredTest: (testId: string, testCode?: string, testTitle?: string) => void;
   onClearAllQuestions: () => void;
   onSyncQuestionsToCloud?: () => Promise<{ success: boolean; count: number }>;
   onSwitchToStudentMode: () => void;
+  onSyncAllTests?: () => Promise<void>;
 }
 
 export const TeacherView: React.FC<TeacherViewProps> = ({
@@ -73,9 +77,11 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
   onDeleteDeliveredTest,
   onClearAllQuestions,
   onSyncQuestionsToCloud,
-  onSwitchToStudentMode
+  onSwitchToStudentMode,
+  onSyncAllTests
 }) => {
   const [activeTab, setActiveTab] = useState<'create-deliver' | 'manage-tests' | 'spreadsheet-sync' | 'student-roster'>('create-deliver');
+  const [showDataRecoveryModal, setShowDataRecoveryModal] = useState(false);
 
   // Delivery form state
   const [testTitle, setTestTitle] = useState('作業療法士 国家試験対策 今日の小テスト');
@@ -158,7 +164,7 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
   const [searchFilter, setSearchFilter] = useState('');
   const [selectedMajorCategory, setSelectedMajorCategory] = useState<string>('all');
   const [selectedSubCategory, setSelectedSubCategory] = useState<string>('all');
-  const [selectedYear, setSelectedYear] = useState<string>('all');
+  const [selectedYears, setSelectedYears] = useState<string[]>([]);
   const [filterPickTwoOnly, setFilterPickTwoOnly] = useState<boolean>(false);
   const [filterHasImageOnly, setFilterHasImageOnly] = useState<boolean>(false);
   const [previewImageQuestion, setPreviewImageQuestion] = useState<Question | null>(null);
@@ -223,6 +229,18 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
     return Array.from(set).sort((a, b) => b.localeCompare(a));
   }, [questions]);
 
+  // Question counts by year for the multi-year picker
+  const questionCountsByYear = useMemo(() => {
+    const map: Record<string, number> = {};
+    questions.forEach(q => {
+      if (q.year) {
+        const y = String(q.year);
+        map[y] = (map[y] || 0) + 1;
+      }
+    });
+    return map;
+  }, [questions]);
+
   // Filtered questions based on the exact same logic as StudentView
   const filteredQuestions = useMemo(() => {
     return questions.filter(q => {
@@ -232,7 +250,7 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
 
       const matchMajor = selectedMajorCategory === 'all' || major === selectedMajorCategory;
       const matchSub = selectedSubCategory === 'all' || sub === selectedSubCategory;
-      const matchYear = selectedYear === 'all' || String(q.year) === selectedYear;
+      const matchYear = selectedYears.length === 0 || selectedYears.includes(String(q.year));
 
       if (!matchMajor || !matchSub || !matchYear) return false;
 
@@ -256,13 +274,13 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
         q.choices.some(c => c.toLowerCase().includes(kw))
       );
     });
-  }, [questions, selectedMajorCategory, selectedSubCategory, selectedYear, searchFilter, filterPickTwoOnly, filterHasImageOnly]);
+  }, [questions, selectedMajorCategory, selectedSubCategory, selectedYears, searchFilter, filterPickTwoOnly, filterHasImageOnly]);
 
   // Reset filter handler
   const handleResetFilters = () => {
     setSelectedMajorCategory('all');
     setSelectedSubCategory('all');
-    setSelectedYear('all');
+    setSelectedYears([]);
     setSearchFilter('');
     setFilterPickTwoOnly(false);
     setFilterHasImageOnly(false);
@@ -1176,19 +1194,14 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
                   })}
                 </select>
 
-                {/* Year */}
-                <select
-                  value={selectedYear}
-                  onChange={(e) => setSelectedYear(e.target.value)}
-                  className="px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                >
-                  <option value="all">すべての年度</option>
-                  {years.map(y => (
-                    <option key={y} value={y}>
-                      第{y}回
-                    </option>
-                  ))}
-                </select>
+                {/* Multi-Year Selector */}
+                <MultiYearSelector
+                  years={years}
+                  selectedYears={selectedYears}
+                  onChange={setSelectedYears}
+                  questionCountsByYear={questionCountsByYear}
+                  theme="indigo"
+                />
               </div>
 
               {/* Bottom bar of filter: "Pick 2" & "Image" checkbox & reset */}
@@ -1226,7 +1239,7 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
                   </label>
                 </div>
 
-                {(selectedMajorCategory !== 'all' || selectedSubCategory !== 'all' || selectedYear !== 'all' || searchFilter || filterPickTwoOnly || filterHasImageOnly) && (
+                {(selectedMajorCategory !== 'all' || selectedSubCategory !== 'all' || selectedYears.length > 0 || searchFilter || filterPickTwoOnly || filterHasImageOnly) && (
                   <button
                     onClick={handleResetFilters}
                     className="text-slate-500 hover:text-indigo-600 flex items-center gap-1 font-medium"
@@ -1381,45 +1394,79 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
               <p className="text-xs text-slate-500">現在学生モードの「今日のテスト」に配信されているテスト一覧です。学年ごとに絞り込みが可能です。</p>
             </div>
 
-            {/* Grade Filter Pill Buttons */}
-            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs font-bold shrink-0">
-              <span className="text-[11px] text-slate-500 px-2 flex items-center gap-1">
-                <GraduationCap className="w-3.5 h-3.5" />
-                絞り込み:
-              </span>
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={() => setDeliveredTestsGradeFilter('all')}
-                className={`px-2.5 py-1 rounded-lg transition-all ${
-                  deliveredTestsGradeFilter === 'all'
-                    ? 'bg-white text-indigo-700 shadow-2xs font-extrabold'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
+                onClick={() => setShowDataRecoveryModal(true)}
+                className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl text-xs font-extrabold transition-all border border-indigo-200 flex items-center gap-1.5 cursor-pointer shadow-2xs"
               >
-                すべて
+                <ShieldCheck className="w-3.5 h-3.5 text-indigo-600" />
+                <span>データ復元・バックアップ</span>
               </button>
-              {[1, 2, 3, 4].map(grade => (
+
+              {/* Grade Filter Pill Buttons */}
+              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs font-bold shrink-0">
+                <span className="text-[11px] text-slate-500 px-2 flex items-center gap-1">
+                  <GraduationCap className="w-3.5 h-3.5" />
+                  絞り込み:
+                </span>
                 <button
                   type="button"
-                  key={grade}
-                  onClick={() => setDeliveredTestsGradeFilter(grade)}
+                  onClick={() => setDeliveredTestsGradeFilter('all')}
                   className={`px-2.5 py-1 rounded-lg transition-all ${
-                    deliveredTestsGradeFilter === grade
+                    deliveredTestsGradeFilter === 'all'
                       ? 'bg-white text-indigo-700 shadow-2xs font-extrabold'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  {grade}年生
+                  すべて
                 </button>
-              ))}
+                {[1, 2, 3, 4].map(grade => (
+                  <button
+                    type="button"
+                    key={grade}
+                    onClick={() => setDeliveredTestsGradeFilter(grade)}
+                    className={`px-2.5 py-1 rounded-lg transition-all ${
+                      deliveredTestsGradeFilter === grade
+                        ? 'bg-white text-indigo-700 shadow-2xs font-extrabold'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {grade}年生
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
           {deliveredTests.length === 0 ? (
-            <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center text-slate-500 space-y-2">
-              <Database className="w-10 h-10 text-slate-300 mx-auto" />
-              <p className="font-bold text-sm text-slate-700">配信されたテストはありません</p>
-              <p className="text-xs">「小テスト作問・配信」タブからテストを作成して配信してください。</p>
+            <div className="bg-white rounded-2xl border border-slate-200 p-8 sm:p-12 text-center text-slate-500 space-y-4">
+              <Database className="w-12 h-12 text-slate-300 mx-auto" />
+              <div className="space-y-1">
+                <p className="font-bold text-base text-slate-800">配信されたテストはありません</p>
+                <p className="text-xs text-slate-500">「小テスト作問・配信」タブからテストを作成して配信してください。</p>
+              </div>
+
+              {/* Data recovery quick action */}
+              <div className="pt-2 max-w-md mx-auto">
+                <div className="bg-gradient-to-br from-indigo-50 to-blue-50 border border-indigo-200 rounded-2xl p-4 text-left space-y-2 shadow-2xs">
+                  <div className="flex items-center gap-2 text-indigo-950 font-black text-xs">
+                    <ShieldCheck className="w-4 h-4 text-indigo-600" />
+                    <span>以前のテストや学生提出データを復元しますか？</span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 leading-relaxed">
+                    アプリの更新や再読み込み後でも、端末内の多重保護キャッシュや受講生端末の解答履歴から、小テストと提出結果をワンクリックで自動復元できます。
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowDataRecoveryModal(true)}
+                    className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>データ自動復元スキャンを開く</span>
+                  </button>
+                </div>
+              </div>
             </div>
           ) : (
             <div className="space-y-3">
@@ -1578,7 +1625,7 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
                     </button>
 
                     <button
-                      onClick={() => onDeleteDeliveredTest(test.id)}
+                      onClick={() => onDeleteDeliveredTest(test.id, test.code, test.title)}
                       className="px-3 py-1.5 text-xs text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg font-medium transition-colors flex items-center"
                     >
                       <Trash2 className="w-3.5 h-3.5 mr-1" />
@@ -2307,6 +2354,20 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
           onClose={() => setShowStudentGuideModal(false)}
           latestTestCode={deliveredTests.length > 0 ? (deliveredTests[0].code || deliveredTests[0].id) : undefined}
           latestTestTitle={deliveredTests.length > 0 ? deliveredTests[0].title : undefined}
+        />
+      )}
+
+      {/* Data Recovery and Backup Modal */}
+      {showDataRecoveryModal && (
+        <DataRecoveryModal
+          isOpen={showDataRecoveryModal}
+          onClose={() => setShowDataRecoveryModal(false)}
+          questions={questions}
+          onRestored={async () => {
+            if (onSyncAllTests) {
+              await onSyncAllTests();
+            }
+          }}
         />
       )}
     </div>

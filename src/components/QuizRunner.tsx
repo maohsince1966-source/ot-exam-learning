@@ -19,7 +19,10 @@ import {
   User,
   Send,
   Loader2,
-  GraduationCap
+  GraduationCap,
+  Lock,
+  Bookmark,
+  BookmarkCheck
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { 
@@ -37,6 +40,11 @@ import {
   deleteStudentFromRoster 
 } from '../services/studentRosterService';
 import { recordSingleQuestionAttempt, recordQuizAttempt } from '../services/studentStudyHistoryService';
+import {
+  getBookmarkedQuestionIds,
+  toggleQuestionBookmark,
+  subscribeBookmarks
+} from '../services/studentBookmarkService';
 
 interface QuizRunnerProps {
   questions: Question[];
@@ -63,15 +71,52 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
   initialSubmissionStatus = 'idle',
   isReviewMode = false
 }) => {
+  const isDeliveredTest = Boolean(testId);
   const [currentIndex, setCurrentIndex] = useState(0);
   // userAnswers stores selected choice numbers array for each questionId: e.g. { '61-AM-001': [1, 3] }
   const [userAnswers, setUserAnswers] = useState<Record<string, number[]>>(initialUserAnswers || {});
   const [revealedExplanations, setRevealedExplanations] = useState<Record<string, boolean>>({});
   const [isSubmitted, setIsSubmitted] = useState(initialSubmitted);
-  const [instantExplanation, setInstantExplanation] = useState(instantExplanationDefault);
-  const [reviewFilter, setReviewFilter] = useState<'all' | 'wrong'>('all');
+  // Delivered tests must always have instant explanation turned OFF while answering
+  const [instantExplanation, setInstantExplanation] = useState(() => isDeliveredTest ? false : instantExplanationDefault);
+  const [reviewFilter, setReviewFilter] = useState<'all' | 'wrong' | 'bookmarked'>('all');
   const [showQuestionsDrawer, setShowQuestionsDrawer] = useState(false);
   const [showIncompleteConfirmModal, setShowIncompleteConfirmModal] = useState(false);
+
+  // "あとで見直す" (Review Later) bookmarks state
+  const [bookmarkedQuestionIds, setBookmarkedQuestionIds] = useState<Set<string>>(() => {
+    return new Set(getBookmarkedQuestionIds());
+  });
+  const [bookmarkFeedbackToast, setBookmarkFeedbackToast] = useState<{ id: string; bookmarked: boolean } | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = subscribeBookmarks((ids) => {
+      setBookmarkedQuestionIds(new Set(ids));
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleToggleBookmark = (questionId: string) => {
+    const isNowBookmarked = toggleQuestionBookmark(questionId);
+    setBookmarkedQuestionIds(prev => {
+      const next = new Set(prev);
+      if (isNowBookmarked) next.add(questionId);
+      else next.delete(questionId);
+      return next;
+    });
+    setBookmarkFeedbackToast({ id: questionId, bookmarked: isNowBookmarked });
+    setTimeout(() => {
+      setBookmarkFeedbackToast(curr => curr?.id === questionId ? null : curr);
+    }, 2200);
+  };
+
+  // Ensure delivered test locks out instant explanation and manual reveals
+  useEffect(() => {
+    if (isDeliveredTest) {
+      setInstantExplanation(false);
+      setRevealedExplanations({});
+    }
+  }, [testId, isDeliveredTest]);
 
   // Student Identity & Cloud Submission states
   const [studentName, setStudentName] = useState(() => {
@@ -125,7 +170,10 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
   const currentQ = questions[currentIndex];
   const selectedChoices = currentQ ? (userAnswers[currentQ.id] || []) : [];
   const currentIsPickTwo = currentQ ? isPickTwoQuestion(currentQ.question, currentQ.answer) : false;
-  const isRevealed = currentQ ? (isSubmitted || Boolean(revealedExplanations[currentQ.id])) : false;
+  // For delivered tests, answers and explanations are strictly locked until the student submits all questions
+  const isRevealed = currentQ
+    ? (isSubmitted || (!isDeliveredTest && Boolean(revealedExplanations[currentQ.id])))
+    : false;
 
   // Handle choice selection (supports both 1-choice and "2つ選べ")
   const handleSelectChoice = (choiceNum: number) => {
@@ -149,8 +197,8 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
           }
         }
 
-        // Trigger instant explanation when 2 choices are selected
-        if (instantExplanation && updated.length === 2) {
+        // Trigger instant explanation when 2 choices are selected (only in self-study practice, NOT during delivered tests)
+        if (!isDeliveredTest && instantExplanation && updated.length === 2) {
           setRevealedExplanations(rex => ({
             ...rex,
             [currentQ.id]: true
@@ -171,7 +219,8 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
         [currentQ.id]: [choiceNum]
       }));
 
-      if (instantExplanation) {
+      // Instant explanation triggered only in self-study practice
+      if (!isDeliveredTest && instantExplanation) {
         setRevealedExplanations(prev => ({
           ...prev,
           [currentQ.id]: true
@@ -202,6 +251,15 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
 
   // Perform actual grading and calculate scores
   const executeGrading = () => {
+    // For delivered tests, strictly require all questions to be answered before grading and revealing explanations
+    if (isDeliveredTest) {
+      const incomplete = getIncompleteQuestionsList();
+      if (incomplete.length > 0) {
+        setShowIncompleteConfirmModal(true);
+        return;
+      }
+    }
+
     setShowIncompleteConfirmModal(false);
 
     // Read freshest profile to prevent stale closures
@@ -438,8 +496,11 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
     const scorePercent = Math.round((correctCount / questions.length) * 100);
     const isPassed = scorePercent >= 60; // OT national exam pass threshold
 
+    const bookmarkedInQuizQuestions = questions.filter(q => bookmarkedQuestionIds.has(q.id));
     const filteredReviewQuestions = reviewFilter === 'wrong'
       ? questions.filter(q => !evaluateAnswer(userAnswers[q.id], q.answer, q.question).isCorrect)
+      : reviewFilter === 'bookmarked'
+      ? bookmarkedInQuizQuestions
       : questions;
 
     return (
@@ -588,13 +649,24 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
               >
                 不正解のみ ({questions.length - correctCount})
               </button>
+              <button
+                onClick={() => setReviewFilter('bookmarked')}
+                className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1 ${
+                  reviewFilter === 'bookmarked' ? 'bg-white text-amber-700 shadow-xs font-semibold' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Bookmark className={`w-3.5 h-3.5 ${reviewFilter === 'bookmarked' ? 'text-amber-500 fill-amber-500' : 'text-slate-400'}`} />
+                <span>あとで見直す ({bookmarkedInQuizQuestions.length})</span>
+              </button>
             </div>
           </div>
 
           <div className="mt-6 space-y-6">
             {filteredReviewQuestions.length === 0 ? (
               <div className="text-center py-8 text-slate-500 text-sm">
-                該当する問題はありません（全問正解です！お見事です）。
+                {reviewFilter === 'bookmarked'
+                  ? 'この小テストで「あとで見直す」に登録された問題はありません。'
+                  : '該当する問題はありません（全問正解です！お見事です）。'}
               </div>
             ) : (
               filteredReviewQuestions.map((q, idx) => {
@@ -632,10 +704,29 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
                           第{q.year}回 ({idx + 1}問目)
                         </span>
                       </div>
-                      <div className="text-xs text-slate-700 font-medium">
-                        あなたの解答: <span className="font-bold">{userChoiceList.length > 0 ? userChoiceList.join(', ') : '未選択'}</span>
-                        <span className="mx-2 text-slate-300">|</span>
-                        正答: <span className="font-bold text-emerald-700">{formattedAnswer}</span>
+                      <div className="flex items-center gap-3">
+                        <div className="text-xs text-slate-700 font-medium">
+                          あなたの解答: <span className="font-bold">{userChoiceList.length > 0 ? userChoiceList.join(', ') : '未選択'}</span>
+                          <span className="mx-2 text-slate-300">|</span>
+                          正答: <span className="font-bold text-emerald-700">{formattedAnswer}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleBookmark(q.id)}
+                          className={`text-xs font-semibold px-2.5 py-1 rounded-lg border transition-colors flex items-center gap-1 cursor-pointer shrink-0 shadow-2xs ${
+                            bookmarkedQuestionIds.has(q.id)
+                              ? 'bg-amber-500 hover:bg-amber-600 text-white border-amber-600'
+                              : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300'
+                          }`}
+                          title={bookmarkedQuestionIds.has(q.id) ? '「あとで見直す」を解除' : 'この問題を「あとで見直す」に登録'}
+                        >
+                          {bookmarkedQuestionIds.has(q.id) ? (
+                            <BookmarkCheck className="w-3.5 h-3.5 fill-white" />
+                          ) : (
+                            <Bookmark className="w-3.5 h-3.5 text-amber-600" />
+                          )}
+                          <span>{bookmarkedQuestionIds.has(q.id) ? 'あとで見直す (登録済)' : 'あとで見直す'}</span>
+                        </button>
                       </div>
                     </div>
 
@@ -751,19 +842,30 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
           </div>
 
           <div className="flex items-center space-x-2">
-            {/* Instant feedback toggle */}
-            <button
-              onClick={() => setInstantExplanation(!instantExplanation)}
-              className={`text-xs px-2.5 py-1.5 rounded-lg border transition-colors hidden sm:flex items-center space-x-1 ${
-                instantExplanation
-                  ? 'bg-amber-50 text-amber-800 border-amber-200 font-medium'
-                  : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
-              }`}
-              title="選択した瞬間に正誤と解説を表示するか切り替えます"
-            >
-              <HelpCircle className="w-3.5 h-3.5" />
-              <span>即時解説: {instantExplanation ? 'ON' : 'OFF'}</span>
-            </button>
+            {/* Instant feedback toggle - only for self-study practice, strictly disabled for delivered tests */}
+            {isDeliveredTest ? (
+              <span
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-teal-50 text-teal-800 border border-teal-200 font-medium flex items-center space-x-1"
+                title="教員配信小テスト: 全ての問題に解答・採点後に正答と解説が表示されます"
+              >
+                <FileText className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                <span className="hidden sm:inline">配信小テスト（全問解答後に解説表示）</span>
+                <span className="sm:hidden">配信小テスト</span>
+              </span>
+            ) : (
+              <button
+                onClick={() => setInstantExplanation(!instantExplanation)}
+                className={`text-xs px-2.5 py-1.5 rounded-lg border transition-colors hidden sm:flex items-center space-x-1 ${
+                  instantExplanation
+                    ? 'bg-amber-50 text-amber-800 border-amber-200 font-medium'
+                    : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                }`}
+                title="選択した瞬間に正誤と解説を表示するか切り替えます"
+              >
+                <HelpCircle className="w-3.5 h-3.5" />
+                <span>即時解説: {instantExplanation ? 'ON' : 'OFF'}</span>
+              </button>
+            )}
 
             {/* Questions Jump Drawer Trigger */}
             <button
@@ -777,9 +879,28 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
             <button
               id="submit-quiz-btn"
               onClick={handleSubmit}
-              className="px-3.5 py-1.5 text-xs sm:text-sm bg-teal-600 hover:bg-teal-700 text-white font-semibold rounded-xl shadow-xs transition-colors"
+              className={`px-3.5 py-1.5 text-xs sm:text-sm font-semibold rounded-xl shadow-xs transition-colors flex items-center gap-1.5 ${
+                isDeliveredTest
+                  ? answeredCount === questions.length
+                    ? 'bg-teal-600 hover:bg-teal-700 text-white ring-2 ring-teal-300 animate-pulse'
+                    : 'bg-slate-800 hover:bg-slate-900 text-white'
+                  : 'bg-teal-600 hover:bg-teal-700 text-white'
+              }`}
+              title={
+                isDeliveredTest && answeredCount < questions.length
+                  ? `全問解答後に採点・終了できます（残り ${questions.length - answeredCount} 問）`
+                  : 'テストを終了して採点します'
+              }
             >
-              採点・終了
+              {isDeliveredTest && answeredCount === questions.length && (
+                <CheckCircle2 className="w-3.5 h-3.5" />
+              )}
+              <span>{isDeliveredTest && answeredCount === questions.length ? '全問解答完了！採点へ' : '採点・終了'}</span>
+              {isDeliveredTest && answeredCount < questions.length && (
+                <span className="text-[11px] font-normal text-teal-300">
+                  ({answeredCount}/{questions.length})
+                </span>
+              )}
             </button>
           </div>
         </div>
@@ -795,13 +916,20 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
         {/* Question Jump drawer / strip */}
         {showQuestionsDrawer && (
           <div className="mt-4 pt-3 border-t border-slate-100">
-            <div className="text-xs font-semibold text-slate-500 mb-2">問題ジャンプ:</div>
+            <div className="flex items-center justify-between text-xs font-semibold text-slate-500 mb-2">
+              <span>問題ジャンプ:</span>
+              <span className="flex items-center gap-1 text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 text-[11px] font-bold">
+                <Bookmark className="w-3 h-3 text-amber-600 fill-amber-500" />
+                <span>あとで見直す: {questions.filter(q => bookmarkedQuestionIds.has(q.id)).length}問</span>
+              </span>
+            </div>
             <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-1">
               {questions.map((q, idx) => {
                 const isCurrent = idx === currentIndex;
                 const ans = userAnswers[q.id] || [];
                 const isPick2 = isPickTwoQuestion(q.question, q.answer);
                 const isAnswered = isPick2 ? ans.length === 2 : ans.length >= 1;
+                const isBookmarked = bookmarkedQuestionIds.has(q.id);
 
                 let btnClass = 'bg-slate-100 text-slate-700 border-slate-200';
                 if (isCurrent) {
@@ -817,9 +945,13 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
                       setCurrentIndex(idx);
                       setShowQuestionsDrawer(false);
                     }}
-                    className={`w-7 h-7 text-xs rounded-lg border flex items-center justify-center transition-colors ${btnClass}`}
+                    className={`w-7 h-7 text-xs rounded-lg border flex items-center justify-center transition-colors relative ${btnClass}`}
+                    title={`問${idx + 1} (${q.id})${isBookmarked ? ' ★あとで見直す登録中' : ''}`}
                   >
-                    {idx + 1}
+                    <span>{idx + 1}</span>
+                    {isBookmarked && (
+                      <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-500 rounded-full border border-white ring-1 ring-amber-400" />
+                    )}
                   </button>
                 );
               })}
@@ -830,23 +962,56 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
 
       {/* Main Question Card */}
       <div className="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 shadow-xs space-y-6">
-        {/* Question Meta Badges */}
-        <div className="flex items-center flex-wrap gap-2">
-          <span className="font-mono text-xs font-bold bg-slate-900 text-white px-2.5 py-1 rounded-md">
-            {currentQ.id}
-          </span>
-          <span className="text-xs font-semibold bg-teal-50 text-teal-700 border border-teal-200 px-2.5 py-1 rounded-md">
-            {currentQ.category}
-          </span>
-          <span className="text-xs font-medium bg-slate-100 text-slate-600 px-2.5 py-1 rounded-md">
-            第{currentQ.year}回 国試過去問
-          </span>
-          {currentIsPickTwo && (
-            <span className="text-xs font-extrabold bg-amber-100 text-amber-800 border border-amber-300 px-2.5 py-1 rounded-md animate-pulse">
-              2つ選べ
+        {/* Question Meta Badges & Bookmark Button */}
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center flex-wrap gap-2">
+            <span className="font-mono text-xs font-bold bg-slate-900 text-white px-2.5 py-1 rounded-md">
+              {currentQ.id}
             </span>
-          )}
+            <span className="text-xs font-semibold bg-teal-50 text-teal-700 border border-teal-200 px-2.5 py-1 rounded-md">
+              {currentQ.category}
+            </span>
+            <span className="text-xs font-medium bg-slate-100 text-slate-600 px-2.5 py-1 rounded-md">
+              第{currentQ.year}回 国試過去問
+            </span>
+            {currentIsPickTwo && (
+              <span className="text-xs font-extrabold bg-amber-100 text-amber-800 border border-amber-300 px-2.5 py-1 rounded-md animate-pulse">
+                2つ選べ
+              </span>
+            )}
+          </div>
+
+          {/* Bookmark "あとで見直す" button */}
+          <button
+            type="button"
+            onClick={() => handleToggleBookmark(currentQ.id)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs ${
+              bookmarkedQuestionIds.has(currentQ.id)
+                ? 'bg-amber-500 hover:bg-amber-600 text-white ring-2 ring-amber-300 shadow-xs'
+                : 'bg-amber-50/90 hover:bg-amber-100 text-amber-900 border border-amber-300'
+            }`}
+            title={bookmarkedQuestionIds.has(currentQ.id) ? '「あとで見直す」を解除' : 'この問題を「あとで見直す」に登録（復習用リストに保存）'}
+          >
+            {bookmarkedQuestionIds.has(currentQ.id) ? (
+              <BookmarkCheck className="w-4 h-4 fill-white" />
+            ) : (
+              <Bookmark className="w-4 h-4 text-amber-700" />
+            )}
+            <span>{bookmarkedQuestionIds.has(currentQ.id) ? 'あとで見直す (登録中)' : 'あとで見直す'}</span>
+          </button>
         </div>
+
+        {/* Bookmark feedback notification */}
+        {bookmarkFeedbackToast && bookmarkFeedbackToast.id === currentQ.id && (
+          <div className="bg-amber-100/90 border border-amber-300 text-amber-950 px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-2 animate-fadeIn shadow-2xs">
+            <BookmarkCheck className="w-4 h-4 text-amber-700 shrink-0" />
+            <span>
+              {bookmarkFeedbackToast.bookmarked
+                ? 'この問題を「あとで見直す（復習用問題リスト）」に登録しました！後から一覧から抽出して演習できます。'
+                : '「あとで見直す」登録を解除しました。'}
+            </span>
+          </div>
+        )}
 
         {/* Question Text */}
         <div>
@@ -988,8 +1153,8 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
           </div>
         )}
 
-        {/* Show explanation manual button */}
-        {!isRevealed && (
+        {/* Show explanation manual button - Only for self-study practice, strictly disabled for delivered tests */}
+        {!isRevealed && !isDeliveredTest && (
           <div className="pt-2 flex justify-end">
             <button
               type="button"
@@ -1007,21 +1172,51 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
           </div>
         )}
 
+        {/* Examination mode notice for delivered tests while answering */}
+        {isDeliveredTest && !isSubmitted && (
+          <div className="pt-2 flex justify-end">
+            <span className="text-[11px] text-teal-900 bg-teal-50 border border-teal-200 px-3 py-1.5 rounded-lg flex items-center gap-1.5 font-medium shadow-2xs">
+              <Info className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+              <span>配信小テスト: 全ての問題に解答し「採点・終了」すると正答と解説が表示されます（現在 {answeredCount} / {questions.length} 問 解答済）</span>
+            </span>
+          </div>
+        )}
+
         {/* Navigation buttons */}
-        <div className="pt-6 border-t border-slate-100 flex items-center justify-between">
+        <div className="pt-6 border-t border-slate-100 flex items-center justify-between gap-2">
           <button
             onClick={() => setCurrentIndex(prev => Math.max(0, prev - 1))}
             disabled={currentIndex === 0}
-            className="px-4 py-2 text-xs sm:text-sm rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed flex items-center space-x-1.5 font-medium transition-colors"
+            className="px-4 py-2 text-xs sm:text-sm rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed flex items-center space-x-1.5 font-medium transition-colors cursor-pointer"
           >
             <ArrowLeft className="w-4 h-4" />
             <span>前の問題</span>
           </button>
 
+          {/* Quick bookmark toggle */}
+          <button
+            type="button"
+            onClick={() => handleToggleBookmark(currentQ.id)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer border ${
+              bookmarkedQuestionIds.has(currentQ.id)
+                ? 'bg-amber-50 text-amber-800 border-amber-300 ring-1 ring-amber-300'
+                : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-200'
+            }`}
+            title={bookmarkedQuestionIds.has(currentQ.id) ? '「あとで見直す」を解除' : 'この問題を「あとで見直す」に登録'}
+          >
+            {bookmarkedQuestionIds.has(currentQ.id) ? (
+              <BookmarkCheck className="w-3.5 h-3.5 text-amber-600 fill-amber-500" />
+            ) : (
+              <Bookmark className="w-3.5 h-3.5 text-slate-500" />
+            )}
+            <span className="hidden sm:inline">{bookmarkedQuestionIds.has(currentQ.id) ? 'あとで見直す (登録済)' : 'あとで見直す'}</span>
+            <span className="sm:hidden">{bookmarkedQuestionIds.has(currentQ.id) ? '見直す済' : '見直す'}</span>
+          </button>
+
           {currentIndex < questions.length - 1 ? (
             <button
               onClick={() => setCurrentIndex(prev => Math.min(questions.length - 1, prev + 1))}
-              className="px-5 py-2 text-xs sm:text-sm rounded-xl bg-slate-900 text-white hover:bg-slate-800 flex items-center space-x-1.5 font-semibold transition-colors shadow-xs"
+              className="px-5 py-2 text-xs sm:text-sm rounded-xl bg-slate-900 text-white hover:bg-slate-800 flex items-center space-x-1.5 font-semibold transition-colors shadow-xs cursor-pointer"
             >
               <span>次の問題</span>
               <ArrowRight className="w-4 h-4" />
@@ -1029,7 +1224,7 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
           ) : (
             <button
               onClick={handleSubmit}
-              className="px-5 py-2 text-xs sm:text-sm rounded-xl bg-teal-600 text-white hover:bg-teal-700 flex items-center space-x-1.5 font-bold transition-colors shadow-xs"
+              className="px-5 py-2 text-xs sm:text-sm rounded-xl bg-teal-600 text-white hover:bg-teal-700 flex items-center space-x-1.5 font-bold transition-colors shadow-xs cursor-pointer"
             >
               <span>採点して結果を見る</span>
               <Trophy className="w-4 h-4" />
@@ -1211,15 +1406,29 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
 
             {getIncompleteQuestionsList().length > 0 && (
               <>
-                <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-                  テスト途中で採点を実行すると、未解答または選択数が不足している問題は<strong>「不正解」</strong>として計算されます。
-                  このまま終了して採点しますか？
-                </p>
+                {isDeliveredTest ? (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 space-y-1.5">
+                    <div className="flex items-center gap-1.5 text-amber-900 font-bold text-xs">
+                      <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>配信小テストの受講ルール</span>
+                    </div>
+                    <p className="text-xs text-amber-800 leading-relaxed">
+                      配信小テストでは、<strong>全ての問題に解答するまで採点および正答・解説の確認はできません</strong>。<br />
+                      下の未解答リストから各問題に移動し、全問解答を完了させてください。
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                    テスト途中で採点を実行すると、未解答または選択数が不足している問題は<strong>「不正解」</strong>として計算されます。
+                    このまま終了して採点しますか？
+                  </p>
+                )}
 
                 {/* Incomplete questions list / jumps */}
                 <div className="bg-slate-50 rounded-xl p-3 border border-slate-200">
-                  <div className="text-xs font-semibold text-slate-700 mb-2">
-                    未解答の問題（クリックするとその問題にジャンプします）:
+                  <div className="text-xs font-semibold text-slate-700 mb-2 flex items-center justify-between">
+                    <span>未解答の問題（クリックするとその問題にジャンプします）:</span>
+                    <span className="text-[11px] font-bold text-amber-700">残り {getIncompleteQuestionsList().length} 問</span>
                   </div>
                   <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto p-1">
                     {getIncompleteQuestionsList().map((item) => (
@@ -1230,8 +1439,8 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
                           setCurrentIndex(item.index);
                           setShowIncompleteConfirmModal(false);
                         }}
-                        className="px-2.5 py-1.5 text-xs bg-white hover:bg-teal-50 border border-slate-200 hover:border-teal-300 text-slate-700 hover:text-teal-800 rounded-lg font-medium transition-colors flex items-center gap-1.5 shadow-2xs"
-                        title={`問 ${item.index + 1} に移動`}
+                        className="px-2.5 py-1.5 text-xs bg-white hover:bg-teal-50 border border-slate-200 hover:border-teal-300 text-slate-700 hover:text-teal-800 rounded-lg font-medium transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
+                        title={`問 ${item.index + 1} に移動して解答`}
                       >
                         <span className="font-bold text-slate-900">問 {item.index + 1}</span>
                         <span className="text-[10px] text-amber-700 bg-amber-50 px-1 py-0.2 rounded border border-amber-200">
@@ -1246,26 +1455,55 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
 
             {/* Modal Actions */}
             <div className="flex flex-col sm:flex-row items-center gap-2 pt-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setShowIncompleteConfirmModal(false)}
-                className="w-full sm:flex-1 py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-xs sm:text-sm transition-colors flex items-center justify-center gap-1.5"
-              >
-                <span>問題に戻って続ける</span>
-              </button>
-              <button
-                type="button"
-                disabled={Boolean(testId && !studentId.trim())}
-                onClick={executeGrading}
-                className={`w-full sm:w-auto py-2.5 px-5 font-semibold rounded-xl text-xs sm:text-sm shadow-xs transition-colors flex items-center justify-center gap-1.5 ${
-                  testId && !studentId.trim()
-                    ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
-                    : 'bg-teal-600 hover:bg-teal-700 text-white'
-                }`}
-              >
-                <Send className="w-3.5 h-3.5 mr-1" />
-                {testId ? '採点・教員へ提出する' : 'このまま採点・終了する'}
-              </button>
+              {isDeliveredTest && getIncompleteQuestionsList().length > 0 ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const firstIncomplete = getIncompleteQuestionsList()[0];
+                      if (firstIncomplete) {
+                        setCurrentIndex(firstIncomplete.index);
+                      }
+                      setShowIncompleteConfirmModal(false);
+                    }}
+                    className="w-full sm:flex-1 py-2.5 px-4 bg-teal-600 hover:bg-teal-700 text-white font-semibold rounded-xl text-xs sm:text-sm transition-colors flex items-center justify-center gap-1.5 shadow-xs"
+                  >
+                    <span>未解答の問題（問 {(getIncompleteQuestionsList()[0]?.index ?? 0) + 1}）へ移動して解答</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={true}
+                    className="w-full sm:w-auto py-2.5 px-4 font-semibold rounded-xl text-xs sm:text-sm bg-slate-100 border border-slate-200 text-slate-400 cursor-not-allowed flex items-center justify-center gap-1.5"
+                    title="全ての問題に解答するまで提出・採点はできません"
+                  >
+                    <Lock className="w-3.5 h-3.5 mr-1" />
+                    全問解答後に採点可能
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setShowIncompleteConfirmModal(false)}
+                    className="w-full sm:flex-1 py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-xs sm:text-sm transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <span>問題に戻って続ける</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={Boolean(testId && !studentId.trim())}
+                    onClick={executeGrading}
+                    className={`w-full sm:w-auto py-2.5 px-5 font-semibold rounded-xl text-xs sm:text-sm shadow-xs transition-colors flex items-center justify-center gap-1.5 ${
+                      testId && !studentId.trim()
+                        ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                        : 'bg-teal-600 hover:bg-teal-700 text-white'
+                    }`}
+                  >
+                    <Send className="w-3.5 h-3.5 mr-1" />
+                    {testId ? '採点・教員へ提出して解説を確認する' : 'このまま採点・終了する'}
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>

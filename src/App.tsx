@@ -14,7 +14,22 @@ import { ReceivedTestModal } from './components/ReceivedTestModal';
 import { TeacherAuthModal } from './components/TeacherAuthModal';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { StudentPortalGuideModal } from './components/StudentPortalGuideModal';
-import { decodeDeliveredTest, fetchTestFromServer, fetchAllServerTests, saveTestToServer } from './utils/shareTest';
+import {
+  decodeDeliveredTest,
+  fetchTestFromServer,
+  fetchAllServerTests,
+  syncDeliveredTestsWithServer,
+  getLocalTestsBackup,
+  saveLocalTestsBackup,
+  saveTestToServer,
+  deleteTestFromServer,
+  getKnownDeletedTestIds,
+  recordDeletedTestIds,
+  isTestDeleted,
+  STORAGE_KEY_DELIVERED,
+  STORAGE_KEY_DELIVERED_BACKUP,
+  STORAGE_KEY_DELIVERED_LEGACY
+} from './utils/shareTest';
 import { normalizeImageUrl } from './utils/imageHelper';
 import {
   subscribeDeliveredTests,
@@ -24,14 +39,16 @@ import {
   fetchQuestionsFromServer,
   saveQuestionsToServer,
   fetchQuestionsFromCloud,
-  saveQuestionsToCloud
+  saveQuestionsToCloud,
+  recoverSubmissionsFromStudentHistory,
+  syncSubmissionsWithServer
 } from './services/testSyncService';
 import { recordQuizAttempt } from './services/studentStudyHistoryService';
-import { AlertTriangle, Bell, ChevronRight, Lock } from 'lucide-react';
+import { AlertTriangle, Bell, ChevronRight, Lock, Trash2 } from 'lucide-react';
 
 const STORAGE_KEY_QUESTIONS = 'ot_exam_questions_db_v2';
-const STORAGE_KEY_DELIVERED = 'ot_exam_delivered_tests_v2';
 const STORAGE_KEY_HISTORY = 'ot_exam_quiz_history_v2';
+const STORAGE_KEY_HISTORY_LEGACY = 'ot_exam_quiz_history_v1';
 
 export default function App() {
   const [mode, setMode] = useState<'student' | 'teacher'>('student');
@@ -52,20 +69,37 @@ export default function App() {
   });
   const [showTeacherPortalGuide, setShowTeacherPortalGuide] = useState(false);
 
-  // One-time cleanup for localStorage to prevent mobile QuotaExceeded and memory crashes
+  // Safe migration and protection for localStorage tests & submissions
   useEffect(() => {
     try {
       localStorage.removeItem('ot_exam_questions_db_v1');
       localStorage.removeItem('ot_exam_questions_db_v2');
-      localStorage.removeItem('ot_exam_delivered_tests_v1');
 
-      const savedD = localStorage.getItem(STORAGE_KEY_DELIVERED);
-      if (savedD) {
-        const parsedD = JSON.parse(savedD);
-        if (Array.isArray(parsedD)) {
-          const cleanedD = parsedD.filter((t: DeliveredTest) => !isSampleTest(t));
-          localStorage.setItem(STORAGE_KEY_DELIVERED, JSON.stringify(cleanedD));
-        }
+      // Migrate any legacy delivered tests instead of deleting them!
+      const legacyRaw = localStorage.getItem(STORAGE_KEY_DELIVERED_LEGACY);
+      if (legacyRaw) {
+        try {
+          const parsedLegacy = JSON.parse(legacyRaw);
+          if (Array.isArray(parsedLegacy) && parsedLegacy.length > 0) {
+            const current = getLocalTestsBackup();
+            const map = new Map<string, DeliveredTest>();
+            current.forEach(t => map.set(t.id, t));
+            parsedLegacy.forEach((t: DeliveredTest) => {
+              if (t && t.id && !map.has(t.id)) {
+                map.set(t.id, t);
+              }
+            });
+            const merged = Array.from(map.values());
+            saveLocalTestsBackup(merged);
+            setDeliveredTests(merged);
+          }
+        } catch {}
+      }
+
+      // Check if backup has tests that primary key lacked
+      const allRecovered = getLocalTestsBackup();
+      if (allRecovered.length > 0) {
+        saveLocalTestsBackup(allRecovered);
       }
     } catch {
       // ignore
@@ -75,36 +109,33 @@ export default function App() {
   // Questions Database - Loaded asynchronously from Server/Cloud (avoids 4.4MB localStorage crash on mobile)
   const [questions, setQuestions] = useState<Question[]>([]);
 
-  // Delivered Tests (by Teacher) - Excludes sample test
+  // Delivered Tests (by Teacher) - Initialized safely from local backup, never wiped on restart
   const [deliveredTests, setDeliveredTests] = useState<DeliveredTest[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_DELIVERED);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          return parsed.filter((t: DeliveredTest) => !isSampleTest(t));
-        }
-      }
-    } catch {
-      // fallback
-    }
-    return [];
+    return getLocalTestsBackup();
   });
 
-  // Quiz Attempt History
+  // Test deletion feedback toast
+  const [deleteToastMessage, setDeleteToastMessage] = useState<string | null>(null);
+
+  // Quiz Attempt History - merges v2 and v1 history for full continuity
   const [quizHistory, setQuizHistory] = useState<QuizAttemptResult[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_HISTORY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          return parsed;
+    const historyMap = new Map<string, QuizAttemptResult>();
+    [STORAGE_KEY_HISTORY, STORAGE_KEY_HISTORY_LEGACY].forEach(key => {
+      try {
+        const saved = localStorage.getItem(key);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            parsed.forEach((r: QuizAttemptResult) => {
+              if (r && r.id && !historyMap.has(r.id)) {
+                historyMap.set(r.id, r);
+              }
+            });
+          }
         }
-      }
-    } catch {
-      // fallback
-    }
-    return [];
+      } catch {}
+    });
+    return Array.from(historyMap.values());
   });
 
   // Active Quiz State (if solving or reviewing)
@@ -150,91 +181,93 @@ export default function App() {
   // Fetch and synchronize delivered tests and questions from server and Firestore
   const syncAllTests = React.useCallback(async () => {
     let latestTestsList: DeliveredTest[] = [];
+    const knownDeleted = getKnownDeletedTestIds();
 
-    // 1. Fetch from server API with high reliability
     try {
-      const serverTests = await fetchAllServerTests();
-      if (serverTests && serverTests.length > 0) {
-        const validServerTests = serverTests.filter(t => !isSampleTest(t));
-        if (validServerTests.length > 0) {
-          latestTestsList = validServerTests;
-          setDeliveredTests(prev => {
-            const existingMap = new Map<string, DeliveredTest>(prev.map(t => [t.id, t]));
-            validServerTests.forEach(st => {
-              existingMap.set(st.id, st);
-            });
-            const merged = Array.from(existingMap.values());
-            merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-            try {
-              localStorage.setItem(STORAGE_KEY_DELIVERED, JSON.stringify(merged));
-            } catch {}
-            return merged;
-          });
+      const { tests: syncedTests, deletedTestIds: serverDeletedTestIds } = await syncDeliveredTestsWithServer(deliveredTests);
 
-          // Also harvest questions into questions state
-          setQuestions(prev => {
-            const map = new Map(prev.map(q => [q.id, q]));
-            let added = false;
-            validServerTests.forEach(st => {
-              if (Array.isArray(st.questions)) {
-                st.questions.forEach(q => {
-                  if (q && q.id && !isSampleQuestion(q) && !map.has(q.id)) {
-                    map.set(q.id, {
-                      ...q,
-                      imageUrl: q.imageUrl ? normalizeImageUrl(q.imageUrl) : q.imageUrl
-                    });
-                    added = true;
-                  }
-                });
-              }
-            });
-            return added ? Array.from(map.values()) : prev;
-          });
+      serverDeletedTestIds.forEach(id => {
+        knownDeleted.add(id);
+        knownDeleted.add(id.toUpperCase());
+      });
+
+      latestTestsList = syncedTests;
+
+      // Update state and persistent backup with merged tests
+      setDeliveredTests(syncedTests);
+      saveLocalTestsBackup(syncedTests);
+
+      // If active test was deleted by teacher, abort student quiz immediately
+      setActiveQuiz(currentQuiz => {
+        if (currentQuiz && currentQuiz.testId) {
+          const isDeleted = knownDeleted.has(currentQuiz.testId) || 
+                            knownDeleted.has(currentQuiz.testId.toUpperCase()) ||
+                            !syncedTests.some(t => t.id === currentQuiz.testId || t.code === currentQuiz.testId);
+          if (isDeleted) {
+            setDeleteToastMessage('受講中の小テストは教員により配信停止・削除されたため、終了しました。');
+            setTimeout(() => setDeleteToastMessage(null), 6000);
+            return null;
+          }
         }
+        return currentQuiz;
+      });
+
+      // Clear alerts if target test was deleted
+      setNewTestAlert(prev => {
+        if (prev && (knownDeleted.has(prev.test.id) || (prev.test.code && knownDeleted.has(prev.test.code)))) {
+          return null;
+        }
+        return prev;
+      });
+      setReceivedTest(prev => {
+        if (prev && (knownDeleted.has(prev.test.id) || (prev.test.code && knownDeleted.has(prev.test.code)))) {
+          return null;
+        }
+        return prev;
+      });
+
+      // Also harvest questions into questions state
+      if (syncedTests.length > 0) {
+        setQuestions(prev => {
+          const map = new Map(prev.map(q => [q.id, q]));
+          let added = false;
+          syncedTests.forEach(st => {
+            if (Array.isArray(st.questions)) {
+              st.questions.forEach(q => {
+                if (q && q.id && !isSampleQuestion(q) && !map.has(q.id)) {
+                  map.set(q.id, {
+                    ...q,
+                    imageUrl: q.imageUrl ? normalizeImageUrl(q.imageUrl) : q.imageUrl
+                  });
+                  added = true;
+                }
+              });
+            }
+          });
+          return added ? Array.from(map.values()) : prev;
+        });
       }
     } catch (e) {
       console.warn('Server test sync notice:', e);
     }
 
-    // 2. Fetch directly from Cloud Firestore as well (for cross-container / multi-user cloud sync)
+    // 2. Fetch directly from Cloud Firestore as well (for cross-container sync if available)
     try {
       const cloudTests = await fetchDeliveredTestsFromCloud();
-      if (cloudTests && cloudTests.length > 0) {
-        const validCloudTests = cloudTests.filter(t => !isSampleTest(t));
-        if (validCloudTests.length > 0) {
-          latestTestsList = [...latestTestsList, ...validCloudTests];
-          setDeliveredTests(prev => {
-            const existingMap = new Map<string, DeliveredTest>(prev.map(t => [t.id, t]));
-            validCloudTests.forEach(ct => {
-              existingMap.set(ct.id, ct);
-            });
-            const merged = Array.from(existingMap.values());
-            merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-            try {
-              localStorage.setItem(STORAGE_KEY_DELIVERED, JSON.stringify(merged));
-            } catch {}
-            return merged;
-          });
-
-          // Harvest questions
-          setQuestions(prev => {
-            const map = new Map(prev.map(q => [q.id, q]));
-            let added = false;
-            validCloudTests.forEach(ct => {
-              if (Array.isArray(ct.questions)) {
-                ct.questions.forEach(q => {
-                  if (q && q.id && !isSampleQuestion(q) && !map.has(q.id)) {
-                    map.set(q.id, {
-                      ...q,
-                      imageUrl: q.imageUrl ? normalizeImageUrl(q.imageUrl) : q.imageUrl
-                    });
-                    added = true;
-                  }
-                });
-              }
-            });
-            return added ? Array.from(map.values()) : prev;
-          });
+      if (cloudTests) {
+        const validCloudTests = cloudTests.filter(t => 
+          !isSampleTest(t) &&
+          !knownDeleted.has(t.id) &&
+          !knownDeleted.has(t.id.toUpperCase()) &&
+          (!t.code || (!knownDeleted.has(t.code) && !knownDeleted.has(t.code.toUpperCase())))
+        );
+        // If server returned 0 tests but cloud has valid tests (e.g. offline server fallback)
+        if (validCloudTests.length > 0 && latestTestsList.length === 0) {
+          latestTestsList = validCloudTests;
+          setDeliveredTests(validCloudTests);
+          try {
+            localStorage.setItem(STORAGE_KEY_DELIVERED, JSON.stringify(validCloudTests));
+          } catch {}
         }
       }
     } catch (e) {
@@ -244,7 +277,7 @@ export default function App() {
     // Detect newly arrived tests for active student notification
     if (isInitialSyncDoneRef.current && latestTestsList.length > 0) {
       for (const t of latestTestsList) {
-        if (!knownTestIdsRef.current.has(t.id)) {
+        if (!knownTestIdsRef.current.has(t.id) && !knownDeleted.has(t.id)) {
           knownTestIdsRef.current.add(t.id);
           // Only pop alert if student is not already taking a quiz
           setNewTestAlert({
@@ -313,34 +346,35 @@ export default function App() {
 
     // Real-time subscribe to Firestore delivered tests (for immediate exam delivery via WebSocket/gRPC)
     const unsubscribeTests = subscribeDeliveredTests((cloudTests) => {
-      const validCloudTests = cloudTests.filter(t => !isSampleTest(t));
-      if (validCloudTests.length > 0) {
-        setDeliveredTests(prev => {
-          const map = new Map<string, DeliveredTest>(prev.map(t => [t.id, t]));
-          validCloudTests.forEach(ct => {
-            map.set(ct.id, ct);
-          });
-          const merged = Array.from(map.values());
-          merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-          return merged;
-        });
+      const knownDeleted = getKnownDeletedTestIds();
+      const validCloudTests = cloudTests.filter(t => 
+        !isSampleTest(t) &&
+        !knownDeleted.has(t.id) &&
+        !knownDeleted.has(t.id.toUpperCase()) &&
+        (!t.code || (!knownDeleted.has(t.code) && !knownDeleted.has(t.code.toUpperCase())))
+      );
 
-        // Trigger new test notification if appropriate
-        if (isInitialSyncDoneRef.current) {
-          for (const t of validCloudTests) {
-            if (!knownTestIdsRef.current.has(t.id)) {
-              knownTestIdsRef.current.add(t.id);
-              setNewTestAlert({
-                test: t,
-                questions: t.questions || []
-              });
-              break;
-            }
+      setDeliveredTests(validCloudTests);
+      try {
+        localStorage.setItem(STORAGE_KEY_DELIVERED, JSON.stringify(validCloudTests));
+      } catch {}
+
+      // Trigger new test notification if appropriate
+      if (isInitialSyncDoneRef.current) {
+        for (const t of validCloudTests) {
+          if (!knownTestIdsRef.current.has(t.id) && !knownDeleted.has(t.id)) {
+            knownTestIdsRef.current.add(t.id);
+            setNewTestAlert({
+              test: t,
+              questions: t.questions || []
+            });
+            break;
           }
-        } else {
-          validCloudTests.forEach(t => knownTestIdsRef.current.add(t.id));
-          isInitialSyncDoneRef.current = true;
         }
+      } else {
+        validCloudTests.forEach(t => knownTestIdsRef.current.add(t.id));
+        isInitialSyncDoneRef.current = true;
+      }
 
         // Extract questions from cloud tests as well
         setQuestions(prev => {
@@ -361,7 +395,6 @@ export default function App() {
           });
           return added ? Array.from(map.values()) : prev;
         });
-      }
     });
 
     return () => {
@@ -399,8 +432,24 @@ export default function App() {
       }
 
       if (codeParam) {
+        if (isTestDeleted(codeParam)) {
+          alert('アクセスされた小テストは教員により配信停止・削除されています。');
+          try {
+            window.history.replaceState(null, '', window.location.pathname + (isStudentParam ? '?role=student' : ''));
+          } catch {}
+          return;
+        }
+
         const result = await fetchTestFromServer(codeParam);
         if (result && result.questions.length > 0) {
+          if (isTestDeleted(result.test.id) || (result.test.code && isTestDeleted(result.test.code))) {
+            alert('アクセスされた小テストは教員により配信停止・削除されています。');
+            try {
+              window.history.replaceState(null, '', window.location.pathname + (isStudentParam ? '?role=student' : ''));
+            } catch {}
+            return;
+          }
+
           setMode('student');
 
           setQuestions(prev => {
@@ -417,11 +466,16 @@ export default function App() {
           setReceivedTest(result);
 
           try {
-            window.history.replaceState(null, '', window.location.pathname);
+            window.history.replaceState(null, '', window.location.pathname + (isStudentParam ? '?role=student' : ''));
           } catch {
             // ignore
           }
           return;
+        } else {
+          alert('指定された小テストが見つかりません。すでに教員により配信停止・削除された可能性があります。');
+          try {
+            window.history.replaceState(null, '', window.location.pathname + (isStudentParam ? '?role=student' : ''));
+          } catch {}
         }
       }
 
@@ -464,10 +518,12 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleCheckUrlTest);
   }, []);
 
-  // Save delivered tests and history to localStorage
+  // Save delivered tests and history to localStorage (primary and backup keys)
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY_DELIVERED, JSON.stringify(deliveredTests));
+      if (deliveredTests.length > 0) {
+        saveLocalTestsBackup(deliveredTests);
+      }
     } catch (e) {
       console.error('Failed to save deliveredTests to localStorage', e);
     }
@@ -476,6 +532,15 @@ export default function App() {
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(quizHistory));
+      localStorage.setItem(STORAGE_KEY_HISTORY_LEGACY, JSON.stringify(quizHistory));
+
+      // Auto-recover any submissions from student history and push to server
+      if (quizHistory.length > 0) {
+        const recoveredSubs = recoverSubmissionsFromStudentHistory();
+        if (recoveredSubs.length > 0) {
+          syncSubmissionsWithServer(recoveredSubs).catch(() => {});
+        }
+      }
     } catch (e) {
       console.error('Failed to save quizHistory to localStorage', e);
     }
@@ -610,19 +675,55 @@ export default function App() {
     });
   };
 
-  const handleDeleteDeliveredTest = (testId: string) => {
+  const handleDeleteDeliveredTest = (testId: string, testCode?: string, testTitle?: string) => {
+    const targetTest = deliveredTests.find(t => t.id === testId || (testCode && t.code === testCode));
+    const title = testTitle || targetTest?.title || '小テスト';
+    const code = testCode || targetTest?.code;
+
     setConfirmAction({
-      title: '配信小テストの削除',
-      message: 'この小テストの配信を削除しますか？\n（学生はアクセスできなくなります）',
-      confirmLabel: '削除する',
+      title: '配信小テストの配信停止・削除',
+      message: `小テスト「${title}」の配信を停止し、完全に削除しますか？\n\n・教員画面および学生ポータルの両方から即座に削除されます。\n・学生はアクセスおよび解答ができなくなります。\n（この操作は元に戻せません）`,
+      confirmLabel: '配信停止・削除する',
       onConfirm: async () => {
-        setDeliveredTests(prev => prev.filter(t => t.id !== testId));
-        await deleteDeliveredTestFromCloud(testId);
+        // 1. Immediately record tombstone locally so background polling cannot resurrect it
+        const toTombstone = [testId, ...(code ? [code] : [])];
+        recordDeletedTestIds(toTombstone);
+        knownTestIdsRef.current.delete(testId);
+        if (code) knownTestIdsRef.current.delete(code);
+
+        // 2. Immediately update React state and localStorage
+        const remaining = deliveredTests.filter(t => t.id !== testId && (!code || t.code !== code));
+        setDeliveredTests(remaining);
         try {
-          await fetch(`/api/tests/${testId}`, { method: 'DELETE' });
+          localStorage.setItem(STORAGE_KEY_DELIVERED, JSON.stringify(remaining));
+        } catch {}
+
+        // 3. Clear any active alerts or modals for this test
+        setNewTestAlert(prev => prev && (prev.test.id === testId || prev.test.code === code) ? null : prev);
+        setReceivedTest(prev => prev && (prev.test.id === testId || prev.test.code === code) ? null : prev);
+        setActiveQuiz(currentQuiz => {
+          if (currentQuiz && (currentQuiz.testId === testId || (code && currentQuiz.testId === code))) {
+            return null;
+          }
+          return currentQuiz;
+        });
+
+        // 4. Notify other tabs/components immediately
+        window.dispatchEvent(new CustomEvent('delivered_tests_updated'));
+
+        // 5. Delete on server and Firestore in parallel
+        try {
+          await Promise.allSettled([
+            deleteTestFromServer(testId, code),
+            deleteDeliveredTestFromCloud(testId, code)
+          ]);
         } catch (e) {
-          console.warn('Failed to delete test from server API:', e);
+          console.warn('Delete cloud/server note:', e);
         }
+
+        // 6. Show toast notification
+        setDeleteToastMessage(`小テスト「${title}」の配信を停止し、完全に削除しました。学生ポータルからも消去されました。`);
+        setTimeout(() => setDeleteToastMessage(null), 6000);
       }
     });
   };
@@ -668,8 +769,24 @@ export default function App() {
 
   // Join test by 6-character code
   const handleJoinByCode = async (code: string): Promise<boolean> => {
+    const clean = code.trim().toUpperCase();
+    if (isTestDeleted(clean)) {
+      alert('この小テストは教員により配信停止・削除されています。');
+      return false;
+    }
+
     const result = await fetchTestFromServer(code);
+    if (!result) {
+      alert('指定された小テストが見つかりません。すでに教員により配信停止・削除された可能性があります。');
+      return false;
+    }
+
     if (result && result.questions.length > 0) {
+      if (isTestDeleted(result.test.id) || (result.test.code && isTestDeleted(result.test.code))) {
+        alert('この小テストは教員により配信停止・削除されています。');
+        return false;
+      }
+
       setQuestions(prev => {
         const existingIds = new Set(prev.map(q => q.id));
         const newOnes = result.questions.filter(q => !existingIds.has(q.id));
@@ -677,7 +794,7 @@ export default function App() {
       });
 
       setDeliveredTests(prev => {
-        const filtered = prev.filter(t => t.id !== result.test.id);
+        const filtered = prev.filter(t => t.id !== result.test.id && (!result.test.code || t.code !== result.test.code));
         return [result.test, ...filtered];
       });
 
@@ -764,6 +881,7 @@ export default function App() {
             onClearAllQuestions={handleClearAllQuestions}
             onSyncQuestionsToCloud={handleSyncQuestionsToCloud}
             onSwitchToStudentMode={() => setMode('student')}
+            onSyncAllTests={syncAllTests}
           />
         )}
       </main>
@@ -828,7 +946,7 @@ export default function App() {
                   : alertData.test.questionIds.map(id => questions.find(q => q.id === id)).filter((q): q is Question => q !== undefined);
                 
                 if (testQs.length > 0) {
-                  handleStartQuiz(testQs, alertData.test.title, alertData.test.id, true);
+                  handleStartQuiz(testQs, alertData.test.title, alertData.test.id, false);
                 } else {
                   handleJoinByCode(alertData.test.code || alertData.test.id);
                 }
@@ -839,6 +957,16 @@ export default function App() {
               <ChevronRight className="w-3.5 h-3.5" />
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Deletion confirmation toast */}
+      {deleteToastMessage && (
+        <div className="fixed bottom-4 left-4 sm:bottom-6 sm:left-6 z-50 max-w-md bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-2xl border border-rose-500/50 flex items-center gap-3 animate-fade-in">
+          <div className="w-8 h-8 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0">
+            <Trash2 className="w-4 h-4" />
+          </div>
+          <p className="text-xs sm:text-sm font-semibold text-rose-100">{deleteToastMessage}</p>
         </div>
       )}
 
