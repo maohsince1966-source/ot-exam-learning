@@ -29,6 +29,31 @@ export const STORAGE_KEY_DELIVERED_BACKUP = 'ot_delivered_tests_backup_v1';
 export const STORAGE_KEY_DELIVERED_LEGACY = 'ot_exam_delivered_tests_v1';
 
 /**
+ * The official shared distribution domain for students and public access.
+ */
+export const OFFICIAL_SHARED_ORIGIN = 'https://ais-pre-6waaxeg3gyk7mcdawithnk-259327636380.asia-northeast1.run.app';
+
+/**
+ * Returns the proper public distribution origin for student URLs.
+ * If running on ais-dev or localhost or an internal preview iframe,
+ * it returns the official ais-pre shared URL to ensure students can access the app.
+ */
+export function getPublicDistributionOrigin(): string {
+  try {
+    const origin = window.location.origin;
+    if (origin.includes('ais-dev-')) {
+      return origin.replace('ais-dev-', 'ais-pre-');
+    }
+    if (origin.includes('localhost') || origin.includes('127.0.0.1') || origin.startsWith('file:') || !origin.includes('.')) {
+      return OFFICIAL_SHARED_ORIGIN;
+    }
+    return origin;
+  } catch {
+    return OFFICIAL_SHARED_ORIGIN;
+  }
+}
+
+/**
  * Retrieve all tests stored locally across primary, backup, and legacy keys
  */
 export function getLocalTestsBackup(): DeliveredTest[] {
@@ -149,9 +174,8 @@ export async function saveTestToServer(
     if (res.ok) {
       const data = await res.json();
       const code: string = data.code;
-      if (code) unmarkDeletedTestId(code);
-      const origin = window.location.origin;
-      const pathname = window.location.pathname;
+      const origin = getPublicDistributionOrigin();
+      const pathname = window.location.pathname.endsWith('/') ? window.location.pathname : `${window.location.pathname}/`;
       const shareUrl = `${origin}${pathname}?role=student&code=${code}`;
 
       // Update local backup immediately
@@ -425,8 +449,8 @@ export function encodeDeliveredTest(test: DeliveredTest, questions: Question[]):
  */
 export function buildFallbackShareUrl(test: DeliveredTest, questions: Question[]): string {
   const compressed = encodeDeliveredTest(test, questions);
-  const origin = window.location.origin;
-  const pathname = window.location.pathname;
+  const origin = getPublicDistributionOrigin();
+  const pathname = window.location.pathname.endsWith('/') ? window.location.pathname : `${window.location.pathname}/`;
   return `${origin}${pathname}?role=student#test=${compressed}`;
 }
 

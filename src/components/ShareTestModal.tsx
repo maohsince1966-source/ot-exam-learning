@@ -18,7 +18,8 @@ import {
   saveTestToServer,
   generateTestQRCodeDataUrl,
   buildShareMessageTemplate,
-  buildFallbackShareUrl
+  buildFallbackShareUrl,
+  getPublicDistributionOrigin
 } from '../utils/shareTest';
 
 interface ShareTestModalProps {
@@ -67,7 +68,7 @@ export const ShareTestModal: React.FC<ShareTestModalProps> = ({
       } catch (qrErr: any) {
         console.warn('First QR attempt failed, trying fallback URL...', qrErr);
         // Fallback to origin with role=student and code query
-        const shortOriginUrl = `${window.location.origin}/?role=student&code=${generatedCode || test.id}`;
+        const shortOriginUrl = `${getPublicDistributionOrigin()}/?role=student&code=${generatedCode || test.id}`;
         setShareUrl(shortOriginUrl);
         const qrFallback = await generateTestQRCodeDataUrl(shortOriginUrl);
         setQrDataUrl(qrFallback);
