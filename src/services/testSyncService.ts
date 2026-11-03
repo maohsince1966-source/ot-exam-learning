@@ -18,20 +18,69 @@ const TESTS_COLLECTION = 'tests';
 const SUBMISSIONS_COLLECTION = 'submissions';
 const QUESTIONS_COLLECTION = 'questions';
 
+import { getQuestionsFromLocalCache, saveQuestionsToLocalCache } from '../utils/questionCache';
+
 /**
- * Fetch all registered past questions from server API
+ * Fetch all registered past questions from server API or static bundle fallback
  */
 export async function fetchQuestionsFromServer(): Promise<Question[]> {
+  const fetchWithTimeout = async (url: string, timeoutMs: number = 6000) => {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      clearTimeout(id);
+      return response;
+    } catch (e) {
+      clearTimeout(id);
+      throw e;
+    }
+  };
+
+  // 1. Try static asset (/data/questions.json) or server API endpoint (/api/questions)
   try {
-    const res = await fetch('/api/questions');
-    if (!res.ok) return [];
-    const data = await res.json();
-    if (data && Array.isArray(data.questions)) {
-      return data.questions.filter(q => q && q.id && !isSampleQuestion(q));
+    const staticRes = await fetchWithTimeout('/data/questions.json', 8000);
+    if (staticRes.ok) {
+      const data = await staticRes.json();
+      const list = Array.isArray(data) ? data : (data && Array.isArray(data.questions) ? data.questions : []);
+      if (list.length > 0) {
+        const cleaned = list.filter((q: any) => q && q.id && !isSampleQuestion(q));
+        if (cleaned.length > 0) {
+          saveQuestionsToLocalCache(cleaned).catch(() => {});
+          return cleaned;
+        }
+      }
     }
   } catch (err) {
-    console.warn('Failed to fetch questions from server API:', err);
+    console.warn('Failed to fetch from /data/questions.json:', err);
   }
+
+  // 2. Fallback to /api/questions
+  try {
+    const res = await fetchWithTimeout('/api/questions', 8000);
+    if (res.ok) {
+      const data = await res.json();
+      const list = Array.isArray(data) ? data : (data && Array.isArray(data.questions) ? data.questions : []);
+      if (list.length > 0) {
+        const cleaned = list.filter((q: any) => q && q.id && !isSampleQuestion(q));
+        if (cleaned.length > 0) {
+          saveQuestionsToLocalCache(cleaned).catch(() => {});
+          return cleaned;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to fetch from /api/questions:', err);
+  }
+
+  // 3. Fallback to local IndexedDB cache
+  try {
+    const cached = await getQuestionsFromLocalCache();
+    if (cached.length > 0) {
+      return cached;
+    }
+  } catch {}
+
   return [];
 }
 

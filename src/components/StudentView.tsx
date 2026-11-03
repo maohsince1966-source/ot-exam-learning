@@ -74,6 +74,8 @@ interface StudentViewProps {
   onJoinByCode?: (code: string) => Promise<boolean>;
   onRefreshTests?: () => Promise<void>;
   isStudentStandalone?: boolean;
+  isQuestionsLoading?: boolean;
+  onReloadQuestions?: () => Promise<void>;
 }
 
 export const StudentView: React.FC<StudentViewProps> = ({
@@ -85,7 +87,9 @@ export const StudentView: React.FC<StudentViewProps> = ({
   onSwitchToTeacherMode,
   onJoinByCode,
   onRefreshTests,
-  isStudentStandalone = false
+  isStudentStandalone = false,
+  isQuestionsLoading = false,
+  onReloadQuestions
 }) => {
   // If there are tests delivered by teacher, prioritize today's tests tab for the student
   const [activeTab, setActiveTab] = useState<'practice' | 'bookmarks' | 'today-tests' | 'history'>(() => {
@@ -1446,27 +1450,45 @@ export const StudentView: React.FC<StudentViewProps> = ({
             {questions.length === 0 ? (
               <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-8 sm:p-10 text-center text-slate-500 space-y-4 shadow-xs">
                 <div className="flex justify-center">
-                  <div className="w-12 h-12 bg-teal-50 rounded-2xl flex items-center justify-center text-teal-600">
-                    <Loader2 className="w-6 h-6 animate-spin" />
+                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${isQuestionsLoading ? 'bg-teal-50 text-teal-600' : 'bg-amber-50 text-amber-600'}`}>
+                    {isQuestionsLoading ? (
+                      <Loader2 className="w-6 h-6 animate-spin" />
+                    ) : (
+                      <AlertCircle className="w-6 h-6" />
+                    )}
                   </div>
                 </div>
                 <div className="space-y-1">
-                  <p className="font-bold text-base text-slate-800">過去問データを読み込み中...</p>
+                  <p className="font-bold text-base text-slate-800">
+                    {isQuestionsLoading ? '過去問データを読み込み中...' : '過去問データを受信できませんでした'}
+                  </p>
                   <p className="text-xs text-slate-500 max-w-md mx-auto">
-                    {deliveredTests.length > 0
-                      ? '配信中の小テストを受験する場合は、上の「今日の小テスト」タブを開いてください。'
-                      : 'データベースから過去問データを取得しています。数秒お待ちください。'}
+                    {isQuestionsLoading
+                      ? 'データベースから全4,154問の過去問データを取得しています。数秒お待ちください。'
+                      : '通信のタイムアウトまたは初期化待ちです。下の「再読み込み」ボタンをお試しください。'}
                   </p>
                 </div>
-                {deliveredTests.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('today-tests')}
-                    className="px-5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors inline-flex items-center gap-2"
-                  >
-                    <span>配信中の小テスト一覧へ進む（{deliveredTests.length}件）</span>
-                  </button>
-                )}
+                <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                  {onReloadQuestions && (
+                    <button
+                      type="button"
+                      onClick={() => onReloadQuestions()}
+                      className="px-5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors inline-flex items-center gap-2 cursor-pointer"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>過去問データを再読み込み</span>
+                    </button>
+                  )}
+                  {deliveredTests.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('today-tests')}
+                      className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold rounded-xl shadow-xs transition-colors inline-flex items-center gap-2 cursor-pointer"
+                    >
+                      <span>配信中の小テスト一覧へ進む（{deliveredTests.length}件）</span>
+                    </button>
+                  )}
+                </div>
               </div>
             ) : filteredQuestions.length === 0 ? (
               <div className="bg-white rounded-2xl border border-slate-200 p-10 sm:p-12 text-center text-slate-500 space-y-3">

@@ -1,11 +1,30 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
+
+// Safe resolution of directory for both ESM and CommonJS bundles
+const getDirname = (): string => {
+  try {
+    if (typeof __dirname !== "undefined") {
+      return __dirname;
+    }
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore
+    if (typeof import.meta !== "undefined" && import.meta && import.meta.url) {
+      // @ts-ignore
+      return path.dirname(fileURLToPath(import.meta.url));
+    }
+  } catch {}
+  return process.cwd();
+};
+
+const serverDir = getDirname();
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json({ limit: "10mb" }));
 
@@ -72,19 +91,38 @@ async function startServer() {
     "61-PM-001", "49-PM-029", "42-AM-001", "44-AM-041", "49-PM-003"
   ]);
 
-  // Load in-memory questions
-  let storedQuestions: any[] = [];
-  try {
-    if (fs.existsSync(QUESTIONS_FILE)) {
-      const raw = fs.readFileSync(QUESTIONS_FILE, "utf-8");
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        storedQuestions = parsed.filter(q => q && q.id && !SAMPLE_QUESTION_IDS.has(q.id));
+  // Helper to load questions from candidate paths
+  const loadStoredQuestions = (): any[] => {
+    const candidatePaths = [
+      QUESTIONS_FILE,
+      path.join(process.cwd(), "data", "questions.json"),
+      path.join(process.cwd(), "public", "data", "questions.json"),
+      path.join(process.cwd(), "dist", "data", "questions.json"),
+      path.join(serverDir, "data", "questions.json"),
+      path.join(serverDir, "..", "data", "questions.json"),
+      path.join(serverDir, "..", "public", "data", "questions.json"),
+      path.join(serverDir, "dist", "data", "questions.json"),
+    ];
+
+    for (const p of candidatePaths) {
+      try {
+        if (fs.existsSync(p)) {
+          const raw = fs.readFileSync(p, "utf-8");
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            console.log(`Successfully loaded ${parsed.length} questions from ${p}`);
+            return parsed.filter(q => q && q.id && !SAMPLE_QUESTION_IDS.has(q.id));
+          }
+        }
+      } catch (err) {
+        console.error(`Failed to read questions from ${p}`, err);
       }
     }
-  } catch (err) {
-    console.error("Failed to read questions file", err);
-  }
+    return [];
+  };
+
+  // Load in-memory questions
+  let storedQuestions: any[] = loadStoredQuestions();
 
   // Load in-memory submissions
   let storedSubmissions: any[] = [];
@@ -227,8 +265,38 @@ async function startServer() {
     }
   });
 
+  // Direct static-safe endpoint for /data/questions.json
+  app.get("/data/questions.json", (req, res) => {
+    const candidatePaths = [
+      path.join(process.cwd(), "public", "data", "questions.json"),
+      path.join(process.cwd(), "data", "questions.json"),
+      path.join(process.cwd(), "dist", "data", "questions.json"),
+      path.join(serverDir, "data", "questions.json"),
+      path.join(serverDir, "public", "data", "questions.json"),
+      path.join(serverDir, "dist", "data", "questions.json"),
+    ];
+
+    for (const p of candidatePaths) {
+      if (fs.existsSync(p)) {
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.setHeader("Cache-Control", "public, max-age=3600");
+        return res.sendFile(p);
+      }
+    }
+
+    if (!storedQuestions || storedQuestions.length === 0) {
+      storedQuestions = loadStoredQuestions();
+    }
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    return res.json(storedQuestions);
+  });
+
   // Get list of all registered past questions
   app.get("/api/questions", (req, res) => {
+    if (!storedQuestions || storedQuestions.length === 0) {
+      storedQuestions = loadStoredQuestions();
+    }
+    res.setHeader("Cache-Control", "public, max-age=300");
     res.json({ questions: storedQuestions });
   });
 

@@ -44,6 +44,7 @@ import {
   syncSubmissionsWithServer
 } from './services/testSyncService';
 import { recordQuizAttempt } from './services/studentStudyHistoryService';
+import { getQuestionsFromLocalCache, saveQuestionsToLocalCache } from './utils/questionCache';
 import { AlertTriangle, Bell, ChevronRight, Lock, Trash2 } from 'lucide-react';
 
 const STORAGE_KEY_QUESTIONS = 'ot_exam_questions_db_v2';
@@ -108,6 +109,7 @@ export default function App() {
 
   // Questions Database - Loaded asynchronously from Server/Cloud (avoids 4.4MB localStorage crash on mobile)
   const [questions, setQuestions] = useState<Question[]>([]);
+  const [isQuestionsLoading, setIsQuestionsLoading] = useState<boolean>(true);
 
   // Delivered Tests (by Teacher) - Initialized safely from local backup, never wiped on restart
   const [deliveredTests, setDeliveredTests] = useState<DeliveredTest[]>(() => {
@@ -321,28 +323,47 @@ export default function App() {
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    // Fetch past questions from server API (fallback to Cloud Firestore once)
-    fetchQuestionsFromServer().then(async (serverQs) => {
-      let finalQs = serverQs;
-      if (!finalQs || finalQs.length === 0) {
-        finalQs = await fetchQuestionsFromCloud();
-      }
-      if (finalQs && finalQs.length > 0) {
-        const validQs = finalQs.filter(q => !isSampleQuestion(q));
+    // 0. Immediate local cache retrieval (0ms instant display from IndexedDB)
+    getQuestionsFromLocalCache().then(cached => {
+      if (cached && cached.length > 0) {
         setQuestions(prev => {
-          const map = new Map(prev.map(q => [q.id, q]));
-          validQs.forEach(q => {
-            if (!map.has(q.id)) {
+          if (prev.length === 0) return cached;
+          return prev;
+        });
+        setIsQuestionsLoading(false);
+      }
+    });
+
+    // 1. Full questions load from Server API or static bundle fallback
+    const loadQuestionsAsync = async () => {
+      setIsQuestionsLoading(true);
+      try {
+        let loadedQs = await fetchQuestionsFromServer();
+        if (!loadedQs || loadedQs.length === 0) {
+          loadedQs = await fetchQuestionsFromCloud();
+        }
+        if (loadedQs && loadedQs.length > 0) {
+          const validQs = loadedQs.filter(q => !isSampleQuestion(q));
+          setQuestions(prev => {
+            const map = new Map(prev.map(q => [q.id, q]));
+            validQs.forEach(q => {
               map.set(q.id, {
                 ...q,
                 imageUrl: q.imageUrl ? normalizeImageUrl(q.imageUrl) : q.imageUrl
               });
-            }
+            });
+            return Array.from(map.values());
           });
-          return Array.from(map.values());
-        });
+          saveQuestionsToLocalCache(validQs).catch(() => {});
+        }
+      } catch (err) {
+        console.warn('Questions load note:', err);
+      } finally {
+        setIsQuestionsLoading(false);
       }
-    });
+    };
+
+    loadQuestionsAsync();
 
     // Real-time subscribe to Firestore delivered tests (for immediate exam delivery via WebSocket/gRPC)
     const unsubscribeTests = subscribeDeliveredTests((cloudTests) => {
@@ -426,9 +447,17 @@ export default function App() {
                              urlParams.get('view') === 'student' || 
                              urlParams.get('student') === '1' ||
                              Boolean(codeParam);
+
+      const isTeacherParam = urlParams.get('role') === 'teacher' ||
+                             urlParams.get('view') === 'teacher' ||
+                             urlParams.get('mode') === 'teacher';
+
       if (isStudentParam) {
         setIsStudentStandalone(true);
         setMode('student');
+      } else if (isTeacherParam) {
+        setIsStudentStandalone(false);
+        setShowTeacherAuthModal(true);
       }
 
       if (codeParam) {
@@ -828,6 +857,28 @@ export default function App() {
     setMode('teacher');
   };
 
+  const handleManualReloadQuestions = async () => {
+    setIsQuestionsLoading(true);
+    try {
+      let loaded = await fetchQuestionsFromServer();
+      if (!loaded || loaded.length === 0) {
+        loaded = await fetchQuestionsFromCloud();
+      }
+      if (loaded && loaded.length > 0) {
+        const validQs = loaded.filter(q => !isSampleQuestion(q));
+        setQuestions(validQs.map(q => ({
+          ...q,
+          imageUrl: q.imageUrl ? normalizeImageUrl(q.imageUrl) : q.imageUrl
+        })));
+        saveQuestionsToLocalCache(validQs).catch(() => {});
+      }
+    } catch (e) {
+      console.warn('Manual reload error:', e);
+    } finally {
+      setIsQuestionsLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-['Noto_Sans_JP','Plus_Jakarta_Sans',sans-serif]">
       {/* Top Navigation */}
@@ -869,6 +920,8 @@ export default function App() {
             onJoinByCode={handleJoinByCode}
             onRefreshTests={syncAllTests}
             isStudentStandalone={isStudentStandalone}
+            isQuestionsLoading={isQuestionsLoading}
+            onReloadQuestions={handleManualReloadQuestions}
           />
         ) : (
           <TeacherView
@@ -882,6 +935,8 @@ export default function App() {
             onSyncQuestionsToCloud={handleSyncQuestionsToCloud}
             onSwitchToStudentMode={() => setMode('student')}
             onSyncAllTests={syncAllTests}
+            isQuestionsLoading={isQuestionsLoading}
+            onReloadQuestions={handleManualReloadQuestions}
           />
         )}
       </main>

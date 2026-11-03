@@ -66,6 +66,8 @@ interface TeacherViewProps {
   onSyncQuestionsToCloud?: () => Promise<{ success: boolean; count: number }>;
   onSwitchToStudentMode: () => void;
   onSyncAllTests?: () => Promise<void>;
+  isQuestionsLoading?: boolean;
+  onReloadQuestions?: () => Promise<void>;
 }
 
 export const TeacherView: React.FC<TeacherViewProps> = ({
@@ -78,7 +80,9 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
   onClearAllQuestions,
   onSyncQuestionsToCloud,
   onSwitchToStudentMode,
-  onSyncAllTests
+  onSyncAllTests,
+  isQuestionsLoading = false,
+  onReloadQuestions
 }) => {
   const [activeTab, setActiveTab] = useState<'create-deliver' | 'manage-tests' | 'spreadsheet-sync' | 'student-roster'>('create-deliver');
   const [showDataRecoveryModal, setShowDataRecoveryModal] = useState(false);
@@ -1253,7 +1257,45 @@ export const TeacherView: React.FC<TeacherViewProps> = ({
 
             {/* List of questions to choose from */}
             <div className="space-y-2 max-h-[640px] overflow-y-auto pr-1">
-              {filteredQuestions.length === 0 ? (
+              {isQuestionsLoading ? (
+                <div className="bg-white rounded-xl border border-slate-200 p-12 text-center text-slate-600 space-y-3 shadow-xs">
+                  <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin mx-auto" />
+                  <p className="font-bold text-sm text-slate-800">問題データベースを読み込み中...</p>
+                  <p className="text-xs text-slate-500">過去問データを受信・展開しています。少々お待ちください。</p>
+                </div>
+              ) : questions.length === 0 ? (
+                <div className="bg-white rounded-xl border-2 border-dashed border-indigo-200 p-8 sm:p-12 text-center text-slate-600 space-y-4 shadow-xs">
+                  <div className="w-12 h-12 rounded-2xl bg-indigo-50 border border-indigo-200 text-indigo-600 flex items-center justify-center mx-auto">
+                    <Database className="w-6 h-6" />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="font-bold text-base text-slate-900">問題データベースが未読み込みです</p>
+                    <p className="text-xs text-slate-500 max-w-md mx-auto">
+                      サーバーから過去問題データを取得するか、Googleスプレッドシートから取り込んでください。
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                    {onReloadQuestions && (
+                      <button
+                        type="button"
+                        onClick={onReloadQuestions}
+                        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>問題データを再読み込み</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('spreadsheet-sync')}
+                      className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>スプレッドシート連携を開く</span>
+                    </button>
+                  </div>
+                </div>
+              ) : filteredQuestions.length === 0 ? (
                 <div className="bg-white rounded-xl border border-slate-200 p-12 text-center text-slate-500 space-y-2">
                   <p className="font-semibold text-sm">該当する問題が見つかりません</p>
                   <p className="text-xs">フィルター条件を変更してください。</p>
